@@ -1,0 +1,66 @@
+name: 'CI Inspector'
+description: 'Check catalog item infrastructure requirements against policy thresholds'
+branding:
+  icon: 'shield'
+  color: 'blue'
+inputs:
+  source:
+    description: 'Data source (git or k8s)'
+    default: 'git'
+    required: false
+  config:
+    description: 'Path to .ci-inspector.yml (default: cascading lookup)'
+    required: false
+  fail-on:
+    description: 'Fail on "error" or "warning"'
+    default: 'error'
+    required: false
+  pricing:
+    description: 'Include cost estimates (true/false)'
+    default: 'false'
+    required: false
+  python-version:
+    description: 'Python version to use'
+    default: '3.11'
+    required: false
+runs:
+  using: 'composite'
+  steps:
+    - uses: actions/setup-python@v5
+      with:
+        python-version: ${{ inputs.python-version }}
+
+    - name: Install ci-inspector
+      shell: bash
+      run: pip install ci-inspector
+
+    - name: Detect and check changed catalog items
+      shell: bash
+      env:
+        CI_INSPECTOR_SOURCE: ${{ inputs.source }}
+        CI_INSPECTOR_FAIL_ON: ${{ inputs.fail-on }}
+        CI_INSPECTOR_CONFIG: ${{ inputs.config }}
+      run: |
+        BASE_SHA="${{ github.event.pull_request.base.sha }}"
+        if [ -z "$BASE_SHA" ]; then
+          echo "::warning::No base SHA found — skipping (not a pull_request event)"
+          exit 0
+        fi
+
+        CHANGED=$(ci-inspector detect-changes --base "$BASE_SHA" 2>/dev/null || true)
+        if [ -z "$CHANGED" ]; then
+          echo "No catalog items changed."
+          exit 0
+        fi
+
+        EXIT_CODE=0
+        for CI_NAME in $CHANGED; do
+          echo "Checking $CI_NAME..."
+          ARGS="--source $CI_INSPECTOR_SOURCE --format annotations --fail-on $CI_INSPECTOR_FAIL_ON"
+          if [ -n "$CI_INSPECTOR_CONFIG" ]; then
+            ARGS="$ARGS --config $CI_INSPECTOR_CONFIG"
+          fi
+          ci-inspector check "$CI_NAME" $ARGS || EXIT_CODE=$?
+        done
+
+        exit $EXIT_CODE
