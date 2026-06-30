@@ -765,6 +765,15 @@ async def discover(
     meta = item.meta
     warnings: list[str] = []
 
+    # CatalogItems don't contain the full definition — fetch the AVC
+    if not definition.get("cloud_provider") and not definition.get("env_type"):
+        avc_defn = await source.get_component_definition(ci_name, stage)
+        if avc_defn:
+            avc_spec = avc_defn.pop("__spec__", {})
+            definition = {**definition, **avc_defn}
+            if not item.agnosticv_repo and avc_spec.get("agnosticvRepo"):
+                item = item.model_copy(update={"agnosticv_repo": avc_spec["agnosticvRepo"]})
+
     # Extract key fields
     cloud_provider = definition.get("cloud_provider", "") or ""
     env_type = definition.get("env_type", "") or ""
