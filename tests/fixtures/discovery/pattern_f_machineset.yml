@@ -1,0 +1,11 @@
+# Pattern F: MachineSet groups for GPU/metal workers
+ocp4_workload_machinesets_machineset_groups:
+  - name: gpu-workers
+    instance_type: p3.2xlarge
+    total_replicas: 2
+  - name: metal-workers
+    instance_type: m5.metal
+    total_replicas: 1
+  - name: disabled-group
+    instance_type: m5.xlarge
+    total_replicas: 0

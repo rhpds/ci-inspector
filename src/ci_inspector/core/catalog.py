@@ -25,6 +25,8 @@ class CatalogSource(Protocol):
     async def get_catalog_item(self, ci_name: str, stage: str) -> CatalogItemData | None: ...
     async def get_component_definition(self, ci_name: str, stage: str) -> dict | None: ...
     async def list_catalog_items(self) -> list[CatalogItemData]: ...
+    async def lookup_pool_by_ci(self, ci_name_stage: str) -> str | None: ...
+    async def lookup_pool_name(self, provider_name: str, cluster_size: str) -> str | None: ...
 
 
 class GitSource:
@@ -108,6 +110,14 @@ class GitSource:
                     items.append(item)
 
         return items
+
+    async def lookup_pool_by_ci(self, ci_name_stage: str) -> str | None:
+        """Pool name lookup not available from git source."""
+        return None
+
+    async def lookup_pool_name(self, provider_name: str, cluster_size: str) -> str | None:
+        """Pool name lookup not available from git source."""
+        return None
 
 
 def _load_k8s_api(kubeconfig: str):
@@ -351,3 +361,67 @@ class K8sSource:
                 logger.debug("Failed to query namespace %s: %s", namespace, e)
 
         return items
+
+    async def lookup_pool_by_ci(self, ci_name_stage: str) -> str | None:
+        """Look up pool name by CI label on Poolboy ResourcePools.
+
+        Searches for ResourcePool CRDs with label
+        ``babylon.gpte.redhat.com/catalogItemName`` matching the given CI.
+        """
+        api = self._get_api()
+        if api is None:
+            return None
+        try:
+            result = api.list_namespaced_custom_object(
+                group="poolboy.gpte.redhat.com",
+                version="v1",
+                namespace="poolboy",
+                plural="resourcepools",
+                label_selector=f"babylon.gpte.redhat.com/catalogItemName={ci_name_stage}",
+            )
+            items = result.get("items", [])
+            if items:
+                return items[0].get("metadata", {}).get("name")
+        except Exception as e:
+            logger.debug("Pool lookup by CI %s failed: %s", ci_name_stage, e)
+        return None
+
+    async def lookup_pool_name(self, provider_name: str, cluster_size: str) -> str | None:
+        """Look up pool name by provider reference in ResourcePool spec.
+
+        Searches for a ResourcePool whose spec.resources reference matches
+        the given provider_name and optionally cluster_size.
+        """
+        api = self._get_api()
+        if api is None:
+            return None
+        try:
+            result = api.list_namespaced_custom_object(
+                group="poolboy.gpte.redhat.com",
+                version="v1",
+                namespace="poolboy",
+                plural="resourcepools",
+            )
+            for pool in result.get("items", []):
+                spec = pool.get("spec", {})
+                resources = spec.get("resources", [])
+                for res in resources:
+                    provider = res.get("provider", {})
+                    pname = provider.get("name", "")
+                    if pname == provider_name:
+                        pool_name = pool.get("metadata", {}).get("name", "")
+                        if cluster_size:
+                            # Check if pool matches cluster_size in vars
+                            job_vars = (
+                                res.get("template", {})
+                                .get("spec", {})
+                                .get("vars", {})
+                                .get("job_vars", {})
+                            )
+                            pool_cs = job_vars.get("cluster_size", "")
+                            if pool_cs and pool_cs != cluster_size:
+                                continue
+                        return pool_name
+        except Exception as e:
+            logger.debug("Pool lookup by provider %s failed: %s", provider_name, e)
+        return None

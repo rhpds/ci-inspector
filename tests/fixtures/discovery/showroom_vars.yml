@@ -1,0 +1,7 @@
+# Showroom URL extraction test
+ocp4_workload_showroom_content_git_repo: https://github.com/rhpds/my-showroom.git
+ocp4_workload_showroom_content_git_repo_ref: develop
+persistent: "true"
+ocp4_workload_litellm_virtual_keys_models:
+  - gpt-4o
+  - claude-3-sonnet

@@ -33,6 +33,12 @@ class DiscoveryResult(BaseModel):
     is_binder: bool
     env_type: str | None = None
     cloud_provider: str | None = None
+    showroom_url: str | None = None
+    showroom_ref: str | None = None
+    persistent: bool | None = None
+    can_be_stopped: bool | None = None
+    uses_maas: bool | None = None
+    maas_models: list[str] | None = None
     warnings: list[str] = []
     errors: list[str] = []
 
