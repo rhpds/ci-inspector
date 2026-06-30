@@ -120,6 +120,9 @@ def _load_k8s_api(kubeconfig: str):
         CustomObjectsApi client, or None if kubernetes is not installed
     """
     try:
+        import urllib3
+        urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
+
         from kubernetes import client, config
 
         config.load_kube_config(config_file=kubeconfig)
@@ -260,8 +263,9 @@ class K8sSource:
         if api is None:
             return None
 
-        # CatalogItem name format: {ci_name}.{stage}
-        item_name = f"{ci_name}.{stage}"
+        # Normalize: "summit-2026/lb1404-foo" → "summit-2026.lb1404-foo" (CRD names use dots)
+        normalized = ci_name.replace("/", ".") if "/" in ci_name else ci_name
+        item_name = f"{normalized}.{stage}"
 
         # Try each catalog namespace
         for namespace in _CATALOG_NAMESPACES:
@@ -294,8 +298,8 @@ class K8sSource:
         if api is None:
             return None
 
-        # AVC name format: {ci_name}.{stage}
-        crd_name = f"{ci_name}.{stage}"
+        normalized = ci_name.replace("/", ".") if "/" in ci_name else ci_name
+        crd_name = f"{normalized}.{stage}"
 
         try:
             result = api.get_namespaced_custom_object(
