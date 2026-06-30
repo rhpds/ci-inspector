@@ -1,0 +1,33 @@
+thresholds:
+  max_vcpus: 64
+  max_memory_gb: 256
+  max_instances: 10
+  max_cost_per_hour: 10.00
+  max_storage_gb: 2000
+
+  clouds:
+    CNV:
+      max_vcpus: 128
+    AWS:
+      max_cost_per_hour: 15.00
+
+  flagged_instance_types:
+    - pattern: "p3.*"
+      severity: warning
+      message: "GPU instance — confirm this is intentional"
+    - pattern: "*.metal"
+      severity: error
+      message: "Bare metal instances are not permitted"
+
+ignore:
+  - "tests/**"
+  - "sandbox/**"
+
+pricing:
+  cnv:
+    cpu_per_core_per_hour: 0.0711
+    memory_per_gb_per_hour: 0.00175
+    storage_per_gb_per_hour: 0.00012
+  aws_region: us-east-1
+  azure_region: eastus
+  gcp_region: us-east1
