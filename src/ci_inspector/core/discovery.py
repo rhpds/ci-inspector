@@ -1185,8 +1185,26 @@ async def _resolve_linked_components(
             logger.warning("  Failed to fetch linked AVC %s.%s", linked_ci_name, linked_stage)
             continue
 
+        # Read AgnosticD defaults for the linked AVC and merge
+        linked_spec = linked_def.pop("__spec__", {})
+        linked_scm_url = linked_spec.get("agnosticvRepo", "")
+        linked_env_type = linked_def.get("env_type", "") or ""
+        if linked_env_type.startswith("{{"):
+            stripped = linked_env_type.strip()[2:-2].strip()
+            linked_env_type = linked_def.get(stripped, "") or ""
+        linked_config = linked_def.get("config", "") or ""
+        if not linked_env_type and linked_config:
+            linked_env_type = linked_config
+        linked_cloud = linked_def.get("cloud_provider", "") or ""
+        linked_ref = linked_def.get("scm_ref", "") or "main"
+
+        agd_defaults = await read_agnosticd_defaults(
+            linked_scm_url, linked_ref, linked_env_type, linked_cloud
+        )
+        merged_linked = {**agd_defaults, **linked_def}
+
         # Resolve URL lookups
-        await _resolve_url_lookups(linked_def)
+        await _resolve_url_lookups(merged_linked)
 
         # Determine cluster_size
         cluster_size = ""
@@ -1199,14 +1217,24 @@ async def _resolve_linked_components(
             )
             cluster_size = resource_params.get("cluster_size", "")
         if not cluster_size:
-            cs_raw = linked_def.get("cluster_size", "")
+            cs_raw = merged_linked.get("cluster_size", "")
             if isinstance(cs_raw, str) and "{{" in cs_raw:
                 cluster_size = extract_jinja_default(cs_raw)
             elif cs_raw:
                 cluster_size = str(cs_raw)
 
-        # Extract instances
-        linked_instances = extract_linked_instances(linked_def, cluster_size)
+        # Extract instances from merged defaults + AVC definition
+        linked_instances = extract_linked_instances(merged_linked, cluster_size)
+        if not linked_instances:
+            linked_instances = extract_instances(merged_linked, linked_cloud)
+        else:
+            # Also extract non-pool instances (e.g., bastion from AgnosticD defaults)
+            extra = extract_instances(merged_linked, linked_cloud)
+            existing_purposes = {c.purpose for c in linked_instances}
+            for c in extra:
+                if c.purpose not in existing_purposes:
+                    linked_instances.append(c)
+                    existing_purposes.add(c.purpose)
         if not linked_instances:
             logger.debug("  No instances extracted from linked AVC %s.%s", linked_ci_name, linked_stage)
             continue
@@ -1568,8 +1596,16 @@ async def discover(
     if not env_type and config:
         env_type = config
 
-    scm_url = item.agnosticv_repo or definition.get("agnosticv_repo", "") or definition.get("scm_url", "")
-    scm_ref = definition.get("scm_ref", "") or "main"
+    deployer = definition.get("__meta__", {}).get("deployer", {})
+    # Deployer scm_url points to AgnosticD (infra defaults), agnosticv_repo points
+    # to AgnosticV (catalog configs). Prefer deployer for AgnosticD lookups.
+    scm_url = (
+        deployer.get("scm_url", "")
+        or definition.get("scm_url", "")
+        or item.agnosticv_repo
+        or definition.get("agnosticv_repo", "")
+    )
+    scm_ref = deployer.get("scm_ref", "") or definition.get("scm_ref", "") or "main"
 
     # Read AgnosticD defaults and merge
     agnosticd_defaults = await read_agnosticd_defaults(
