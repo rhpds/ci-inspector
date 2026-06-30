@@ -18,6 +18,9 @@ Plus:
 
 from __future__ import annotations
 
+from typing import TYPE_CHECKING
+
+from ci_inspector.core.agnosticd import read_agnosticd_defaults
 from ci_inspector.core.helpers import (
     CLOUD_MAP,
     eval_jinja_str,
@@ -26,7 +29,12 @@ from ci_inspector.core.helpers import (
     resolve_image_to_os,
     resolve_jinja_var,
 )
-from ci_inspector.core.models import Component
+from ci_inspector.core.models import Component, DiscoveryResult
+
+if TYPE_CHECKING:
+    from ci_inspector.core.catalog import CatalogSource
+
+_MAX_BINDER_DEPTH = 5
 
 
 def extract_instances(merged: dict, cloud_provider: str) -> list[Component]:
@@ -714,3 +722,150 @@ def inject_parent_workers(
                     "count_formula": count_formula,
                 }
             )
+
+
+async def discover(
+    ci_name: str,
+    stage: str,
+    source: "CatalogSource",
+    _depth: int = 0,
+    _parameter_overrides: dict | None = None,
+) -> DiscoveryResult:
+    """Main discovery entry point.
+
+    Pipeline:
+    1. Fetch catalog item from source
+    2. Extract scm_url, env_type, cloud_provider from definition
+    3. Read AgnosticD defaults and merge with CRD overrides
+    4. Check for binder pattern (__meta__.components without own instances)
+    5. Extract instances from merged vars
+    6. Extract CNV workload VMs
+    7. Return DiscoveryResult
+    """
+    if _depth > _MAX_BINDER_DEPTH:
+        return DiscoveryResult(
+            ci_name=ci_name,
+            stage=stage,
+            components=[],
+            is_binder=False,
+            errors=[f"Max binder depth ({_MAX_BINDER_DEPTH}) exceeded"],
+        )
+
+    item = await source.get_catalog_item(ci_name, stage)
+    if item is None:
+        return DiscoveryResult(
+            ci_name=ci_name,
+            stage=stage,
+            components=[],
+            is_binder=False,
+            errors=[f"Catalog item '{ci_name}.{stage}' not found"],
+        )
+
+    definition = item.definition
+    meta = item.meta
+    warnings: list[str] = []
+
+    # Extract key fields
+    cloud_provider = definition.get("cloud_provider", "") or ""
+    env_type = definition.get("env_type", "") or ""
+    scm_url = item.agnosticv_repo or definition.get("agnosticv_repo", "")
+    scm_ref = definition.get("scm_ref", "") or "main"
+
+    # Apply parameter overrides
+    if _parameter_overrides:
+        definition = {**definition, **_parameter_overrides}
+
+    # Check for binder pattern
+    binder_components = meta.get("components", [])
+    has_own_instances = bool(definition.get("instances")) or any(
+        k.endswith("_instance_type") for k in definition
+    )
+
+    if binder_components and not has_own_instances:
+        return await _discover_binder(
+            ci_name, stage, definition, binder_components, source, _depth
+        )
+
+    # Read AgnosticD defaults and merge
+    agnosticd_defaults = await read_agnosticd_defaults(
+        scm_url, scm_ref, env_type, cloud_provider
+    )
+    merged = {**agnosticd_defaults, **definition}
+
+    # Extract instances
+    components = extract_instances(merged, cloud_provider)
+
+    # Extract CNV workload VMs
+    cnv_vms = extract_cnv_workload_vms(merged)
+    components.extend(cnv_vms)
+
+    return DiscoveryResult(
+        ci_name=ci_name,
+        stage=stage,
+        components=components,
+        is_binder=False,
+        env_type=env_type or None,
+        cloud_provider=CLOUD_MAP.get(cloud_provider, cloud_provider) or None,
+        warnings=warnings,
+    )
+
+
+async def _discover_binder(
+    ci_name: str,
+    stage: str,
+    parent_definition: dict,
+    binder_components: list | dict,
+    source: "CatalogSource",
+    depth: int,
+) -> DiscoveryResult:
+    """Resolve a binder catalog item by recursing into sub-components."""
+    all_components: list[Component] = []
+    warnings: list[str] = []
+
+    if isinstance(binder_components, dict):
+        binder_components = [binder_components]
+
+    for bc in binder_components:
+        if not isinstance(bc, dict):
+            continue
+
+        sub_path = bc.get("path", "")
+        sub_name = bc.get("name", "")
+
+        # Resolve sub-component CI name and stage from path
+        if sub_path:
+            parts = sub_path.rsplit("/", 1)
+            if len(parts) == 2:
+                sub_ci = parts[0].split("/")[-1]
+                sub_stage = parts[1].replace(".yml", "").replace(".yaml", "")
+            else:
+                sub_ci = sub_path.replace(".yml", "").replace(".yaml", "")
+                sub_stage = stage
+        elif sub_name:
+            sub_ci = sub_name
+            sub_stage = stage
+        else:
+            warnings.append(f"Binder component missing path and name: {bc}")
+            continue
+
+        sub_result = await discover(sub_ci, sub_stage, source, _depth=depth + 1)
+
+        # Inject parent workers into sub-components if needed
+        sub_dicts = [c.model_dump() for c in sub_result.components]
+        sub_cloud = sub_result.cloud_provider or "CNV"
+        inject_parent_workers(parent_definition, sub_dicts, sub_cloud)
+
+        for cd in sub_dicts:
+            cd["group"] = sub_name or sub_ci
+            cd["group_ci_name"] = sub_ci
+            all_components.append(Component(**cd))
+
+        warnings.extend(sub_result.warnings)
+
+    return DiscoveryResult(
+        ci_name=ci_name,
+        stage=stage,
+        components=all_components,
+        is_binder=True,
+        warnings=warnings,
+    )
