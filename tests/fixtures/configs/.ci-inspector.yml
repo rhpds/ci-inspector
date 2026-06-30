@@ -1,0 +1,9 @@
+thresholds:
+  max_vcpus: 64
+  max_cost_per_hour: 10.00
+  flagged_instance_types:
+    - pattern: "p3.*"
+      severity: warning
+      message: "GPU instance"
+ignore:
+  - "tests/**"

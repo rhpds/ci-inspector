@@ -1,0 +1,4 @@
+thresholds:
+  max_vcpus: 128
+ignore:
+  - "sandbox/**"
