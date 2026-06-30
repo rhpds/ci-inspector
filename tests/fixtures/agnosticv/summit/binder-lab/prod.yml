@@ -1,0 +1,7 @@
+---
+__meta__:
+  catalog:
+    display_name: Binder Lab
+  components:
+    - name: cluster
+      path: pool-cluster/prod.yml
