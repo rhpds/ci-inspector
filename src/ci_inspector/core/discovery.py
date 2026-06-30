@@ -974,6 +974,7 @@ def inject_parent_workers(
                 "count": worker_count,
                 "cpu": 0,
                 "memory_gb": 0,
+                "storage_gb": 0,
                 "os": "RHCOS",
                 "os_billing": "Linux",
                 "cloud": cloud,
@@ -1008,6 +1009,7 @@ def inject_parent_workers(
                     "count": worker_count,
                     "cpu": worker_cores,
                     "memory_gb": worker_memory,
+                    "storage_gb": 0,
                     "os": "RHCOS",
                     "cloud": "CNV",
                     "count_formula": count_formula,
@@ -1584,19 +1586,29 @@ async def discover(
     # Resolve URL lookups (instances/containers from git repos)
     await _resolve_url_lookups(merged)
 
-    # Check for binder pattern
+    # Check for binder pattern — look in BOTH meta (from CatalogItem) and
+    # definition.__meta__ (from the AVC, which is the authoritative source)
     binder_components = meta.get("components", [])
+    avc_meta = definition.get("__meta__", {})
+    avc_meta_components = avc_meta.get("components", {})
+
+    # Prefer AVC __meta__.components over CatalogItem meta.components
+    # AVC components have parameter_values, when conditions, etc.
+    if avc_meta_components and isinstance(avc_meta_components, (list, dict)):
+        binder_components = avc_meta_components
+
     has_own_infra = bool(merged.get("instances")) or bool(merged.get("ai_control_plane_cores"))
-    # Also check for role vars
     if not has_own_infra:
         has_own_infra = any(k.endswith("_instance_type") for k in merged if merged.get(k))
 
     if binder_components and isinstance(binder_components, (list, dict)) and not has_own_infra:
-        # Check if these are __meta__.components-style entries (with path/item keys)
-        # vs raw CRD resources (with provider/kind keys from K8s source)
+        # Check if these are __meta__-style entries (with path/item keys)
+        _entries = binder_components if isinstance(binder_components, list) else (
+            [{"name": k, **v} for k, v in binder_components.items()] if isinstance(binder_components, dict) else []
+        )
         _is_meta_style = any(
             isinstance(c, dict) and (c.get("path") or c.get("item"))
-            for c in (binder_components if isinstance(binder_components, list) else [])
+            for c in _entries
         )
         if _is_meta_style:
             return await _discover_binder(
