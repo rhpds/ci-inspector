@@ -175,7 +175,6 @@ class K8sSource:
             agnosticv_repo_obj = spec.get("agnosticvRepo", {}) or {}
             git_info = agnosticv_repo_obj.get("git", {}) or {}
             git_url = git_info.get("url", "") or ""
-            git_ref = git_info.get("ref", "") or ""
             agnosticv_dir = agnosticv_repo_obj.get("contextDir", "") or ""
 
             # Build agnosticv_repo as full URL

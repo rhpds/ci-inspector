@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import logging
 from datetime import datetime, timezone
-from decimal import Decimal
 
 from ci_inspector.core.models import DiscoveryResult
 
@@ -72,7 +71,6 @@ def sync_to_sheets(
             ws.append_row(TOOL_COLUMNS)
 
         existing = ws.get_all_values()
-        header = existing[0] if existing else []
         rows = existing[1:] if len(existing) > 1 else []
 
         # Build lookup: (ci_name, stage) -> row_index (1-based, header is row 1)

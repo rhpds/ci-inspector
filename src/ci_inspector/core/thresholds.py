@@ -9,7 +9,6 @@ from ci_inspector.core.models import (
     DiscoveryResult,
     Finding,
     InspectorConfig,
-    PricingConfig,
     ThresholdConfig,
     ThresholdRule,
 )

@@ -1,7 +1,7 @@
 from decimal import Decimal
 from pathlib import Path
 
-from ci_inspector.core.models import Component, DiscoveryResult, Finding, ThresholdConfig
+from ci_inspector.core.models import Component, DiscoveryResult, ThresholdConfig
 from ci_inspector.core.thresholds import check_thresholds, load_config
 
 FIXTURES = Path(__file__).parent.parent / "fixtures" / "configs"
