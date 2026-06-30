@@ -1,0 +1,12 @@
+# Pattern C: CNV instances with cores/memory
+cloud_provider: none
+env_type: openshift-cluster
+instances:
+  - name: control-plane
+    count: 3
+    cores: 8
+    memory: 32Gi
+  - name: worker
+    count: 3
+    cores: 16
+    memory: 64Gi

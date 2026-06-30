@@ -1,0 +1,20 @@
+# Pattern A: instances list with flavor dict
+cloud_provider: ec2
+env_type: ocp4-cluster
+instances:
+  - name: bastion
+    count: 1
+    public_dns: true
+    image: RHEL-9.2
+    flavor:
+      ec2: t3a.medium
+      azure: Standard_D2s_v3
+    security_groups:
+      - BastionSG
+  - name: worker
+    count: "{{ worker_instance_count }}"
+    image: RHCOS
+    flavor:
+      ec2: "{{ worker_instance_type }}"
+worker_instance_count: 3
+worker_instance_type: m5.xlarge

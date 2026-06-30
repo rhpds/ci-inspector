@@ -1,0 +1,4 @@
+# Binder parent with worker injection vars
+worker_instance_count: "{{ [(num_users|int / 3)|round|int, 3]|max }}"
+worker_instance_type: m5a.4xlarge
+cloud_provider: ec2

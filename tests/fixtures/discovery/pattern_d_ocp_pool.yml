@@ -1,0 +1,10 @@
+# Pattern D: OCP cluster pool vars
+cloud_provider: none
+env_type: ocp4-cluster
+ai_control_plane_cores: 8
+ai_control_plane_memory: 32Gi
+ai_control_plane_count: 3
+ai_infra_cores: 4
+ai_infra_memory: 16Gi
+ai_infra_count: 2
+cluster_size: large

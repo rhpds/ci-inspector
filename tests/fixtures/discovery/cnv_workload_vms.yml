@@ -1,0 +1,11 @@
+# CNV workload VMs
+cnv_instances:
+  - name: gpu-vm
+    cores: 8
+    memory: 32Gi
+    image_size: 100Gi
+    count: 2
+  - name: storage-vm
+    cores: 4
+    memory: 16Gi
+    count: 1
