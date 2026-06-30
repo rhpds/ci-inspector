@@ -185,3 +185,54 @@ def detect_changes(base):
             if ci_name not in seen:
                 seen.add(ci_name)
                 click.echo(ci_name)
+
+
+@main.command()
+@click.option("--source", default="git", type=click.Choice(["git", "k8s"]))
+@click.option("--repo-path", default=".")
+@click.option("--kubeconfig", default=None)
+@click.option("--format", "fmt", default="json",
+              type=click.Choice(["json", "table", "sheets"]))
+@click.option("--sheet-id", default=None, help="Google Sheets spreadsheet ID")
+@click.option("--credentials", default=None, help="Google SA key path")
+@click.option("--pricing/--no-pricing", default=False)
+@click.option("--filter", "filter_glob", default=None, help="Filter by CI name glob")
+@click.option("--prune/--no-prune", default=False, help="Hard-delete removed CIs from sheet")
+def scan(source, repo_path, kubeconfig, fmt, sheet_id, credentials, pricing, filter_glob, prune):
+    """Scan all catalog items."""
+    import fnmatch
+    src = _get_source(source, repo_path, kubeconfig)
+    items = asyncio.run(src.list_catalog_items())
+
+    if filter_glob:
+        items = [i for i in items if fnmatch.fnmatch(i.ci_name, filter_glob)]
+
+    results: list[DiscoveryResult] = []
+    for item in items:
+        result = asyncio.run(discover(item.ci_name, item.stage, src))
+        if not result.errors:
+            if pricing:
+                from ci_inspector.core.pricing import resolve_pricing
+                result = result.model_copy(update={
+                    "components": asyncio.run(resolve_pricing(
+                        result.components,
+                        load_config(Path(repo_path), Path(repo_path)).pricing,
+                    ))
+                })
+            results.append(result)
+
+    if fmt == "sheets":
+        if not sheet_id or not credentials:
+            click.echo("Error: --sheet-id and --credentials required for sheets format", err=True)
+            sys.exit(2)
+        from ci_inspector.outputs.sheets import sync_to_sheets
+        sync_to_sheets(results, sheet_id, credentials, prune=prune)
+        click.echo(f"Synced {len(results)} CIs to sheet.")
+    elif fmt == "json":
+        import json
+        data = [r.model_dump(mode="json") for r in results]
+        click.echo(json.dumps(data, indent=2, default=str))
+    else:
+        for r in results:
+            click.echo(format_table(r))
+            click.echo()
