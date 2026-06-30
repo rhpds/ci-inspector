@@ -108,6 +108,7 @@ class CatalogItemData(BaseModel):
     display_name: str = ""
     definition: dict = {}
     linked_components: list[dict] = []
+    resources: list[dict] = []
     parameters: dict = {}
     meta: dict = {}
     agnosticv_repo: str = ""

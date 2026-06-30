@@ -1134,9 +1134,10 @@ async def _resolve_linked_components(
     if not linked_components:
         return []
 
-    # Build resource lookup from meta.components (AnarchySubject resources)
+    # Build resource lookup from item_data.resources (full spec.resources list)
+    # and fall back to meta.components for git-sourced items
     resource_by_name: dict[str, dict] = {}
-    for res in item_data.meta.get("components", []):
+    for res in item_data.resources or item_data.meta.get("components", []):
         rname = res.get("name", "")
         if rname:
             resource_by_name[rname] = res
@@ -1591,9 +1592,45 @@ async def discover(
         has_own_infra = any(k.endswith("_instance_type") for k in merged if merged.get(k))
 
     if binder_components and isinstance(binder_components, (list, dict)) and not has_own_infra:
-        return await _discover_binder(
-            ci_name, stage, definition, binder_components, source, _depth
+        # Check if these are __meta__.components-style entries (with path/item keys)
+        # vs raw CRD resources (with provider/kind keys from K8s source)
+        _is_meta_style = any(
+            isinstance(c, dict) and (c.get("path") or c.get("item"))
+            for c in (binder_components if isinstance(binder_components, list) else [])
         )
+        if _is_meta_style:
+            return await _discover_binder(
+                ci_name, stage, definition, binder_components, source, _depth
+            )
+
+    # Linked-component binder pattern (K8s source):
+    # CatalogItem has linkedComponents + resources but no own infra → binder
+    if (
+        not has_own_infra
+        and _depth == 0
+        and item.linked_components
+        and item.resources
+    ):
+        linked = await _resolve_linked_components(ci_name, stage, item, source)
+        if linked:
+            # This is a binder — extract metadata and return
+            parent_meta = definition.get("__meta__", {})
+            metadata = _extract_metadata(definition, parent_meta)
+            return DiscoveryResult(
+                ci_name=ci_name,
+                stage=stage,
+                components=linked,
+                is_binder=True,
+                env_type=env_type or None,
+                cloud_provider=_normalize_cloud_from_instances(linked) or None,
+                showroom_url=metadata["showroom_url"],
+                showroom_ref=metadata["showroom_ref"],
+                persistent=metadata["persistent"],
+                can_be_stopped=metadata["can_be_stopped"],
+                uses_maas=metadata["uses_maas"],
+                maas_models=metadata["maas_models"],
+                warnings=warnings,
+            )
 
     # Extract instances
     components = extract_instances(merged, cloud_provider)

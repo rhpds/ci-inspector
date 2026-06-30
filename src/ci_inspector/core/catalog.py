@@ -206,14 +206,14 @@ class K8sSource:
             # Extract linked components (convert strings to dicts if needed)
             raw_linked = spec.get("linkedComponents", []) or []
             linked_components = []
-            for item in raw_linked:
-                if isinstance(item, dict):
-                    linked_components.append(item)
-                elif isinstance(item, str):
+            for lc_entry in raw_linked:
+                if isinstance(lc_entry, dict):
+                    linked_components.append(lc_entry)
+                elif isinstance(lc_entry, str):
                     # Convert string reference to dict format
-                    linked_components.append({"name": item})
+                    linked_components.append({"name": lc_entry})
                 else:
-                    linked_components.append(item)
+                    linked_components.append(lc_entry)
 
             # Build definition dict from spec (everything except our extracted fields)
             definition = {
@@ -224,15 +224,16 @@ class K8sSource:
             }
 
             # Add meta info (components, sandboxes from resources)
-            resources = spec.get("resources", []) or []
+            raw_resources = spec.get("resources", []) or []
             components = []
             sandboxes = []
-            for resource in resources:
+            for resource in raw_resources:
                 kind = resource.get("kind", "")
-                if kind == "AnarchySubject":
-                    components.append(resource)
-                elif kind == "OcpSandbox":
+                if kind == "OcpSandbox":
                     sandboxes.append(resource)
+                else:
+                    # All non-sandbox resources (AnarchySubject and provider-only)
+                    components.append(resource)
 
             meta = {
                 "catalog": {
@@ -250,6 +251,7 @@ class K8sSource:
                 display_name=display_name,
                 definition=definition,
                 linked_components=linked_components,
+                resources=raw_resources,
                 parameters=parameters,
                 meta=meta,
                 agnosticv_repo=agnosticv_repo,

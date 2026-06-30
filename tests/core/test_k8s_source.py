@@ -168,3 +168,114 @@ async def test_k8s_source_kubernetes_not_installed():
         item = await source.get_catalog_item("my-workshop", "prod")
 
     assert item is None
+
+
+@pytest.mark.asyncio
+async def test_k8s_source_binder_with_linked_components():
+    """Test that K8sSource correctly parses CatalogItems with linkedComponents and resources.
+
+    This simulates the binder pattern where a CatalogItem references linked
+    components via spec.linkedComponents and spec.resources with provider refs.
+    """
+    mock_api = MagicMock()
+
+    def mock_list(group, version, namespace, plural):
+        if namespace == "babylon-catalog-event":
+            return {
+                "items": [
+                    {
+                        "metadata": {
+                            "name": "summit-2026.lb1758-binder.event",
+                            "namespace": "babylon-catalog-event",
+                        },
+                        "spec": {
+                            "displayName": "Binder Lab",
+                            "resources": [
+                                {
+                                    "name": "openshift",
+                                    "provider": {
+                                        "apiVersion": "poolboy.gpte.redhat.com/v1",
+                                        "kind": "ResourceProvider",
+                                        "name": "agd-v2.ocp-virt-labs-pool.event",
+                                        "namespace": "poolboy",
+                                    },
+                                },
+                                {
+                                    "name": "lb1758-binder",
+                                    "provider": {
+                                        "name": "summit-2026.lb1758-binder.event",
+                                        "namespace": "poolboy",
+                                    },
+                                },
+                            ],
+                            "linkedComponents": [
+                                {
+                                    "displayName": "OpenShift Cluster",
+                                    "name": "openshift",
+                                }
+                            ],
+                            "parameters": [],
+                        },
+                    }
+                ]
+            }
+        return {"items": []}
+
+    mock_api.list_namespaced_custom_object.side_effect = mock_list
+
+    with patch("ci_inspector.core.catalog._load_k8s_api", return_value=mock_api):
+        source = K8sSource("/fake/kubeconfig")
+        item = await source.get_catalog_item("summit-2026/lb1758-binder", "event")
+
+    assert item is not None
+    assert item.ci_name == "summit-2026.lb1758-binder"
+    assert item.stage == "event"
+
+    # linked_components should be populated
+    assert len(item.linked_components) == 1
+    assert item.linked_components[0]["name"] == "openshift"
+    assert item.linked_components[0]["displayName"] == "OpenShift Cluster"
+
+    # resources should be stored (full spec.resources list)
+    assert len(item.resources) == 2
+    assert item.resources[0]["name"] == "openshift"
+    assert item.resources[0]["provider"]["name"] == "agd-v2.ocp-virt-labs-pool.event"
+
+    # meta.components should include the resources (non-sandbox)
+    assert len(item.meta["components"]) == 2
+
+
+@pytest.mark.asyncio
+async def test_k8s_source_variable_shadowing_fix():
+    """Test that the linkedComponents loop variable doesn't shadow the item parameter."""
+    mock_api = MagicMock()
+
+    def mock_list(group, version, namespace, plural):
+        if namespace == "babylon-catalog-prod":
+            return {
+                "items": [
+                    {
+                        "metadata": {"name": "test.prod", "namespace": "babylon-catalog-prod"},
+                        "spec": {
+                            "displayName": "Test",
+                            "linkedComponents": [
+                                {"name": "comp1", "displayName": "Component 1"},
+                                "comp2-string-ref",
+                            ],
+                        },
+                    }
+                ]
+            }
+        return {"items": []}
+
+    mock_api.list_namespaced_custom_object.side_effect = mock_list
+
+    with patch("ci_inspector.core.catalog._load_k8s_api", return_value=mock_api):
+        source = K8sSource("/fake/kubeconfig")
+        item = await source.get_catalog_item("test", "prod")
+
+    assert item is not None
+    # Dict entries preserved as-is
+    assert item.linked_components[0] == {"name": "comp1", "displayName": "Component 1"}
+    # String entries converted to dict
+    assert item.linked_components[1] == {"name": "comp2-string-ref"}
