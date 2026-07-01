@@ -135,16 +135,15 @@ def test_cli_detect_changes_no_git():
 @pytest.mark.asyncio
 async def test_end_to_end_with_pricing():
     """Test full pipeline including pricing resolution."""
-    from ci_inspector.core.pricing import resolve_pricing
+    from ci_inspector.core.pricing import load_cnv_rates, resolve_pricing
 
     source = GitSource(FIXTURES)
     result = await discover("my-workshop", "prod", source)
-    config = load_config(FIXTURES / "my-workshop", FIXTURES.parent / "configs")
 
-    # Resolve pricing (even if no config, should handle gracefully)
+    pricing_config = load_cnv_rates()
     components_with_pricing = await resolve_pricing(
         result.components,
-        config.pricing,
+        pricing_config,
     )
 
     assert len(components_with_pricing) == len(result.components)

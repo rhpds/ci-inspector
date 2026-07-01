@@ -24,8 +24,7 @@ def _load_pricing_db(pricing_json_path: str | None = None) -> dict:
 
     path = Path(pricing_json_path) if pricing_json_path else _BUNDLED_PRICING_DB
     if not path.is_file():
-        logger.warning("Pricing database not found: %s", path)
-        return {}
+        raise FileNotFoundError(f"Pricing database not found: {path}")
 
     with path.open() as f:
         db = json.load(f)

@@ -34,11 +34,9 @@ class TestLoadCnvRates:
         assert config.cnv_memory_per_gb_per_hour == Decimal("0.0036485604")
         assert config.cnv_storage_per_gb_per_hour == Decimal("0.0000925493")
 
-    def test_nonexistent_file_uses_model_defaults(self):
-        # When a custom path doesn't exist, load_cnv_rates returns model defaults (zero)
-        config = load_cnv_rates("/nonexistent/path.json")
-        assert config.cnv_cpu_per_core_per_hour == Decimal("0")
-        assert config.cnv_memory_per_gb_per_hour == Decimal("0")
+    def test_nonexistent_file_raises(self):
+        with pytest.raises(FileNotFoundError):
+            load_cnv_rates("/nonexistent/path.json")
 
 
 class TestCalculateCnvHourlyRate:
@@ -62,6 +60,7 @@ class TestCalculateCnvHourlyRate:
         config = PricingConfig(
             cnv_cpu_per_core_per_hour=Decimal("0.10"),
             cnv_memory_per_gb_per_hour=Decimal("0.01"),
+            cnv_storage_per_gb_per_hour=Decimal("0"),
         )
         rate = calculate_cnv_hourly_rate(4, 16, 0, config)
         expected = Decimal("4") * Decimal("0.10") + Decimal("16") * Decimal("0.01")
