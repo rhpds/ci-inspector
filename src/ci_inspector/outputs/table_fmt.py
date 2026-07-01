@@ -27,7 +27,7 @@ def format_table(result: DiscoveryResult) -> str:
     table.add_column("Cost/hr", justify="right", style="yellow")
 
     for c in result.components:
-        cost = f"${c.cost_per_hour}" if c.cost_per_hour else "—"
+        cost = f"${c.cost_per_hour:.2f}" if c.cost_per_hour else "—"
         group_prefix = f"[dim]{c.group}:[/dim] " if c.group else ""
         table.add_row(
             f"{group_prefix}{c.purpose}",
@@ -39,7 +39,7 @@ def format_table(result: DiscoveryResult) -> str:
         )
 
     # Totals row
-    total_cost = f"${result.total_cost_per_hour}/hr" if result.total_cost_per_hour else "—"
+    total_cost = f"${result.total_cost_per_hour:.2f}/hr" if result.total_cost_per_hour else "—"
     table.add_row(
         "[bold]Totals[/bold]", "", "",
         f"[bold]{result.total_vcpus}[/bold]",
