@@ -51,6 +51,12 @@ def analyze(ci_name, stage, source, repo_path, kubeconfig, fmt, pricing):
             click.echo(f"Error: {err}", err=True)
         sys.exit(2)
 
+    if pricing:
+        from ci_inspector.core.pricing import resolve_pricing
+        config = load_config(Path(repo_path), Path(repo_path))
+        updated = asyncio.run(resolve_pricing(result.components, config.pricing))
+        result = result.model_copy(update={"components": updated})
+
     if fmt == "json":
         click.echo(format_json(result))
     else:

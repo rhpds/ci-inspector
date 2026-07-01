@@ -102,8 +102,15 @@ async def resolve_pricing(
     components: list[Component], config: PricingConfig,
 ) -> list[Component]:
     updated: list[Component] = []
-    aws_types = [c.instance_type for c in components if c.cloud == "AWS" and not c.cost_per_hour]
-    azure_types = [c.instance_type for c in components if c.cloud == "Azure" and not c.cost_per_hour]
+
+    def _is_cloud(cloud: str, *names: str) -> bool:
+        norm = cloud.lower() if cloud else ""
+        return norm in names or cloud in names
+
+    aws_types = [c.instance_type for c in components
+                 if _is_cloud(c.cloud, "aws", "ec2", "AWS") and not c.cost_per_hour]
+    azure_types = [c.instance_type for c in components
+                   if _is_cloud(c.cloud, "azure", "Azure") and not c.cost_per_hour]
 
     aws_prices = await fetch_aws_pricing(aws_types, config.aws_region) if aws_types else {}
     azure_prices = await fetch_azure_pricing(azure_types, config.azure_region) if azure_types else {}
@@ -114,15 +121,17 @@ async def resolve_pricing(
             continue
 
         price = None
-        if c.cloud == "CNV":
+        is_cnv = _is_cloud(c.cloud, "cnv", "openshift_cnv", "osp", "none") or "_core_" in (c.instance_type or "")
+
+        if is_cnv:
             cnv = parse_cnv_instance_type(c.instance_type)
             if cnv:
                 price = calculate_cnv_hourly_rate(cnv[0], cnv[1], c.storage_gb, config)
             elif c.cpu and c.memory_gb:
                 price = calculate_cnv_hourly_rate(c.cpu, c.memory_gb, c.storage_gb, config)
-        elif c.cloud == "AWS":
+        elif _is_cloud(c.cloud, "aws", "ec2", "AWS"):
             price = aws_prices.get(c.instance_type)
-        elif c.cloud == "Azure":
+        elif _is_cloud(c.cloud, "azure", "Azure"):
             price = azure_prices.get(c.instance_type)
 
         updated.append(c.model_copy(update={"cost_per_hour": price}))
