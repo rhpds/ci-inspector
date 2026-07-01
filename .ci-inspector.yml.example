@@ -24,10 +24,12 @@ ignore:
   - "sandbox/**"
 
 pricing:
-  cnv:
-    cpu_per_core_per_hour: 0.0711
-    memory_per_gb_per_hour: 0.00175
-    storage_per_gb_per_hour: 0.00012
+  # CNV rates are loaded from data/pricing.json (or --pricing-db override)
+  # Override per-repo if needed:
+  # cnv:
+  #   cpu_per_core_per_hour: 0.0969377605
+  #   memory_per_gb_per_hour: 0.0036485604
+  #   storage_per_gb_per_hour: 0.0000925493
   aws_region: us-east-1
   azure_region: eastus
   gcp_region: us-east1

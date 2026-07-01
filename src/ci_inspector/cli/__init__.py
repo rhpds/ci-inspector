@@ -41,7 +41,8 @@ def main():
 @click.option("--kubeconfig", default=None, help="Kubeconfig path (required for k8s)")
 @click.option("--format", "fmt", default="table", type=click.Choice(["json", "table"]))
 @click.option("--pricing/--no-pricing", default=False, help="Include cost estimates")
-def analyze(ci_name, stage, source, repo_path, kubeconfig, fmt, pricing):
+@click.option("--pricing-json", default=None, help="Path to pricing JSON (default: bundled)")
+def analyze(ci_name, stage, source, repo_path, kubeconfig, fmt, pricing, pricing_json):
     """Analyze infrastructure for a catalog item."""
     src = _get_source(source, repo_path, kubeconfig)
     result = asyncio.run(discover(ci_name, stage, src))
@@ -52,9 +53,9 @@ def analyze(ci_name, stage, source, repo_path, kubeconfig, fmt, pricing):
         sys.exit(2)
 
     if pricing:
-        from ci_inspector.core.pricing import resolve_pricing
-        config = load_config(Path(repo_path), Path(repo_path))
-        updated = asyncio.run(resolve_pricing(result.components, config.pricing))
+        from ci_inspector.core.pricing import load_cnv_rates, resolve_pricing
+        config = load_cnv_rates(pricing_json)
+        updated = asyncio.run(resolve_pricing(result.components, config, pricing_json))
         result = result.model_copy(update={"components": updated})
 
     if fmt == "json":

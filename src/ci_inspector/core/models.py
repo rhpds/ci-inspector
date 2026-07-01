@@ -88,9 +88,9 @@ class ThresholdConfig(BaseModel):
 
 
 class PricingConfig(BaseModel):
-    cnv_cpu_per_core_per_hour: Decimal = Decimal("0.0711")
-    cnv_memory_per_gb_per_hour: Decimal = Decimal("0.00175")
-    cnv_storage_per_gb_per_hour: Decimal = Decimal("0.00012")
+    cnv_cpu_per_core_per_hour: Decimal = Decimal("0.0969377605")
+    cnv_memory_per_gb_per_hour: Decimal = Decimal("0.0036485604")
+    cnv_storage_per_gb_per_hour: Decimal = Decimal("0.0000925493")
     aws_region: str = "us-east-1"
     azure_region: str = "eastus"
     gcp_region: str = "us-east1"

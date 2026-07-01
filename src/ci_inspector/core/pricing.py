@@ -1,16 +1,48 @@
 from __future__ import annotations
 
+import json
 import logging
 import re
 from decimal import Decimal
-
-import httpx
+from pathlib import Path
 
 from ci_inspector.core.models import Component, PricingConfig
 
 logger = logging.getLogger(__name__)
 
 _CNV_TYPE_RE = re.compile(r"^(\d+)_core_(\d+)Gi$")
+
+_BUNDLED_PRICING_DB = Path(__file__).parent.parent.parent.parent / "data" / "pricing.json"
+
+_pricing_db_cache: dict | None = None
+
+
+def _load_pricing_db(pricing_json_path: str | None = None) -> dict:
+    global _pricing_db_cache
+    if _pricing_db_cache is not None and pricing_json_path is None:
+        return _pricing_db_cache
+
+    path = Path(pricing_json_path) if pricing_json_path else _BUNDLED_PRICING_DB
+    if not path.is_file():
+        logger.warning("Pricing database not found: %s", path)
+        return {}
+
+    with path.open() as f:
+        db = json.load(f)
+
+    if pricing_json_path is None:
+        _pricing_db_cache = db
+    return db
+
+
+def load_cnv_rates(pricing_json_path: str | None = None) -> PricingConfig:
+    db = _load_pricing_db(pricing_json_path)
+    rates = db.get("cnv_rates", {})
+    return PricingConfig(
+        cnv_cpu_per_core_per_hour=Decimal(rates.get("cpu_per_core_per_hour", "0")),
+        cnv_memory_per_gb_per_hour=Decimal(rates.get("memory_per_gb_per_hour", "0")),
+        cnv_storage_per_gb_per_hour=Decimal(rates.get("storage_per_gb_per_hour", "0")),
+    )
 
 
 def parse_cnv_instance_type(name: str) -> tuple[int, int] | None:
@@ -32,74 +64,30 @@ def calculate_cnv_hourly_rate(
     )
 
 
-async def fetch_aws_pricing(
-    instance_types: list[str], region: str, os_billing: str = "Linux",
-) -> dict[str, Decimal]:
-    url = (
-        f"https://pricing.us-east-1.amazonaws.com/offers/v1.0/aws/AmazonEC2/current/"
-        f"{region}/index.json"
-    )
-    results: dict[str, Decimal] = {}
-    try:
-        async with httpx.AsyncClient(timeout=60.0) as client:
-            resp = await client.get(url)
-            if resp.status_code != 200:
-                return results
-            data = resp.json()
-            products = data.get("products", {})
-            terms = data.get("terms", {}).get("OnDemand", {})
-            wanted = set(instance_types)
+def _lookup_instance_spec(
+    cloud: str, instance_type: str, region: str, pricing_json_path: str | None = None,
+) -> tuple[int, int, Decimal | None]:
+    """Look up (vcpu, memory_gb, cost_per_hour) from the pricing database."""
+    db = _load_pricing_db(pricing_json_path)
+    cloud_types = db.get("instance_types", {}).get(cloud, {})
+    entry = cloud_types.get(instance_type)
+    if not entry:
+        return 0, 0, None
 
-            for sku, product in products.items():
-                attrs = product.get("attributes", {})
-                itype = attrs.get("instanceType", "")
-                if (
-                    itype in wanted
-                    and attrs.get("operatingSystem") == os_billing
-                    and attrs.get("tenancy") == "Shared"
-                    and attrs.get("preInstalledSw") == "NA"
-                    and attrs.get("capacitystatus") == "Used"
-                ):
-                    for term in terms.get(sku, {}).values():
-                        for dim in term.get("priceDimensions", {}).values():
-                            price = dim.get("pricePerUnit", {}).get("USD")
-                            if price and itype not in results:
-                                results[itype] = Decimal(price)
-                                wanted.discard(itype)
-    except Exception as e:
-        logger.error("AWS pricing error: %s", e)
-    return results
+    vcpu = entry.get("vcpu", 0)
+    memory_gb = entry.get("memory_gb", 0)
 
+    regions = entry.get("regions", {})
+    cost = regions.get(region) or regions.get(next(iter(regions), ""), None)
+    cost_decimal = Decimal(cost) if cost else None
 
-async def fetch_azure_pricing(
-    instance_types: list[str], region: str, os_billing: str = "Linux",
-) -> dict[str, Decimal]:
-    results: dict[str, Decimal] = {}
-    os_name = "Windows" if os_billing == "Windows" else "Linux"
-    for itype in instance_types:
-        url = (
-            f"https://prices.azure.com/api/retail/prices?"
-            f"$filter=armSkuName eq '{itype}' and armRegionName eq '{region}' "
-            f"and priceType eq 'Consumption' and contains(meterName, 'Spot') eq false "
-            f"and contains(productName, '{os_name}')"
-        )
-        try:
-            async with httpx.AsyncClient(timeout=15.0) as client:
-                resp = await client.get(url)
-                if resp.status_code == 200:
-                    items = resp.json().get("Items", [])
-                    for item in items:
-                        price = item.get("retailPrice", 0)
-                        if price > 0:
-                            results[itype] = Decimal(str(price))
-                            break
-        except Exception:
-            pass
-    return results
+    return vcpu, memory_gb, cost_decimal
 
 
 async def resolve_pricing(
-    components: list[Component], config: PricingConfig,
+    components: list[Component],
+    config: PricingConfig,
+    pricing_json_path: str | None = None,
 ) -> list[Component]:
     updated: list[Component] = []
 
@@ -107,33 +95,59 @@ async def resolve_pricing(
         norm = cloud.lower() if cloud else ""
         return norm in names or cloud in names
 
-    aws_types = [c.instance_type for c in components
-                 if _is_cloud(c.cloud, "aws", "ec2", "AWS") and not c.cost_per_hour]
-    azure_types = [c.instance_type for c in components
-                   if _is_cloud(c.cloud, "azure", "Azure") and not c.cost_per_hour]
-
-    aws_prices = await fetch_aws_pricing(aws_types, config.aws_region) if aws_types else {}
-    azure_prices = await fetch_azure_pricing(azure_types, config.azure_region) if azure_types else {}
+    def _cloud_key(cloud: str) -> str:
+        norm = cloud.lower() if cloud else ""
+        if norm in ("aws", "ec2"):
+            return "AWS"
+        if norm in ("azure",):
+            return "Azure"
+        if norm in ("gcp",):
+            return "GCP"
+        if norm in ("equinix",):
+            return "Equinix"
+        if norm in ("ibm",):
+            return "IBM"
+        return cloud
 
     for c in components:
-        if c.cost_per_hour is not None:
+        if c.cost_per_hour is not None and c.cpu > 0:
             updated.append(c)
             continue
 
-        price = None
         is_cnv = _is_cloud(c.cloud, "cnv", "openshift_cnv", "osp", "none") or "_core_" in (c.instance_type or "")
+
+        price = c.cost_per_hour
+        vcpu = c.cpu
+        mem = c.memory_gb
 
         if is_cnv:
             cnv = parse_cnv_instance_type(c.instance_type)
             if cnv:
-                price = calculate_cnv_hourly_rate(cnv[0], cnv[1], c.storage_gb, config)
-            elif c.cpu and c.memory_gb:
+                vcpu = vcpu or cnv[0]
+                mem = mem or cnv[1]
+                if not price:
+                    price = calculate_cnv_hourly_rate(cnv[0], cnv[1], c.storage_gb, config)
+            elif c.cpu and c.memory_gb and not price:
                 price = calculate_cnv_hourly_rate(c.cpu, c.memory_gb, c.storage_gb, config)
-        elif _is_cloud(c.cloud, "aws", "ec2", "AWS"):
-            price = aws_prices.get(c.instance_type)
-        elif _is_cloud(c.cloud, "azure", "Azure"):
-            price = azure_prices.get(c.instance_type)
+        else:
+            cloud_key = _cloud_key(c.cloud)
+            region = config.aws_region if cloud_key == "AWS" else config.azure_region if cloud_key == "Azure" else config.gcp_region
+            db_vcpu, db_mem, db_price = _lookup_instance_spec(
+                cloud_key, c.instance_type, region, pricing_json_path
+            )
+            vcpu = vcpu or db_vcpu
+            mem = mem or db_mem
+            if not price:
+                price = db_price
 
-        updated.append(c.model_copy(update={"cost_per_hour": price}))
+        updates: dict = {}
+        if price != c.cost_per_hour:
+            updates["cost_per_hour"] = price
+        if vcpu != c.cpu:
+            updates["cpu"] = vcpu
+        if mem != c.memory_gb:
+            updates["memory_gb"] = mem
+
+        updated.append(c.model_copy(update=updates) if updates else c)
 
     return updated
