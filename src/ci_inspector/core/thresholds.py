@@ -111,7 +111,7 @@ def check_thresholds(result: DiscoveryResult, config: ThresholdConfig) -> list[F
         max_vcpus = cloud_overrides.get("max_vcpus", config.max_vcpus)
         if total_vcpus > max_vcpus:
             findings.append(Finding(
-                severity="error", rule="max_vcpus",
+                severity=config.severity, rule="max_vcpus",
                 message=f"{total_vcpus} vCPUs ({cloud}) exceeds threshold of {max_vcpus}",
                 actual_value=f"{total_vcpus} vCPUs",
                 threshold_value=f"{max_vcpus} vCPUs",
@@ -121,7 +121,7 @@ def check_thresholds(result: DiscoveryResult, config: ThresholdConfig) -> list[F
         max_mem = cloud_overrides.get("max_memory_gb", config.max_memory_gb)
         if total_mem > max_mem:
             findings.append(Finding(
-                severity="error", rule="max_memory_gb",
+                severity=config.severity, rule="max_memory_gb",
                 message=f"{total_mem} GB memory ({cloud}) exceeds threshold of {max_mem}",
                 actual_value=f"{total_mem} GB",
                 threshold_value=f"{max_mem} GB",
@@ -131,7 +131,7 @@ def check_thresholds(result: DiscoveryResult, config: ThresholdConfig) -> list[F
         max_inst = cloud_overrides.get("max_instances", config.max_instances)
         if total_instances > max_inst:
             findings.append(Finding(
-                severity="error", rule="max_instances",
+                severity=config.severity, rule="max_instances",
                 message=f"{total_instances} instances ({cloud}) exceeds threshold of {max_inst}",
                 actual_value=str(total_instances),
                 threshold_value=str(max_inst),
@@ -141,7 +141,7 @@ def check_thresholds(result: DiscoveryResult, config: ThresholdConfig) -> list[F
         max_stor = cloud_overrides.get("max_storage_gb", config.max_storage_gb)
         if total_storage > max_stor:
             findings.append(Finding(
-                severity="error", rule="max_storage_gb",
+                severity=config.severity, rule="max_storage_gb",
                 message=f"{total_storage} GB storage ({cloud}) exceeds threshold of {max_stor}",
                 actual_value=f"{total_storage} GB",
                 threshold_value=f"{max_stor} GB",
@@ -154,7 +154,7 @@ def check_thresholds(result: DiscoveryResult, config: ThresholdConfig) -> list[F
             max_cost = Decimal(str(cloud_overrides.get("max_cost_per_hour", config.max_cost_per_hour)))
             if total_cost > max_cost:
                 findings.append(Finding(
-                    severity="error", rule="max_cost_per_hour",
+                    severity=config.severity, rule="max_cost_per_hour",
                     message=f"${total_cost}/hr ({cloud}) exceeds threshold of ${max_cost}/hr",
                     actual_value=f"${total_cost}/hr",
                     threshold_value=f"${max_cost}/hr",

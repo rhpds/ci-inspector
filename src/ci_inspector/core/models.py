@@ -77,6 +77,7 @@ class ThresholdRule(BaseModel):
 
 
 class ThresholdConfig(BaseModel):
+    severity: Literal["error", "warning", "info"] = "error"
     max_vcpus: int = 64
     max_memory_gb: int = 256
     max_instances: int = 10
