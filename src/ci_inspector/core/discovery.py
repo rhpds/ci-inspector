@@ -1757,6 +1757,103 @@ async def discover(
 
 
 # ---------------------------------------------------------------------------
+# Merged YAML discovery (for CI pipelines using agnosticv --merge)
+# ---------------------------------------------------------------------------
+
+
+async def discover_from_merged(
+    ci_name: str,
+    stage: str,
+    merged_yaml: dict,
+) -> DiscoveryResult:
+    """Discover infrastructure from a pre-merged YAML dict.
+
+    Use this when the caller already has the fully merged catalog item
+    definition (e.g., output of ``agnosticv --git=false --merge``).
+    Skips CatalogSource-dependent steps (linked components, sandbox
+    resolution, renamed item lookup).
+    """
+    definition = dict(merged_yaml)
+    meta = definition.pop("__meta__", {})
+    warnings: list[str] = []
+
+    cloud_provider = definition.get("cloud_provider", "") or ""
+    env_type = definition.get("env_type", "") or ""
+    if env_type.startswith("{{"):
+        stripped = env_type.strip()[2:-2].strip()
+        env_type = definition.get(stripped, "") or ""
+    config = definition.get("config", "") or ""
+    if not env_type and config:
+        env_type = config
+
+    deployer = meta.get("deployer", {})
+    scm_url = deployer.get("scm_url", "") or definition.get("scm_url", "")
+    scm_ref = deployer.get("scm_ref", "") or definition.get("scm_ref", "") or "main"
+
+    agnosticd_defaults = await read_agnosticd_defaults(
+        scm_url, scm_ref, env_type, cloud_provider
+    )
+    merged = {**agnosticd_defaults, **_strip_secrets(definition)}
+
+    agd_instances = agnosticd_defaults.get("instances")
+    if isinstance(agd_instances, list) and agd_instances:
+        merged["_agnosticd_instances"] = agd_instances
+
+    await _resolve_url_lookups(merged)
+
+    # Check for binder pattern
+    binder_components = meta.get("components", {})
+    has_own_infra = bool(merged.get("instances")) or bool(merged.get("ai_control_plane_cores"))
+    if not has_own_infra:
+        has_own_infra = any(k.endswith("_instance_type") for k in merged if merged.get(k))
+
+    if binder_components and not has_own_infra:
+        warnings.append("Binder CI — sub-components not resolved in merged mode. "
+                         "Use --source k8s for full binder resolution.")
+
+    # Extract instances
+    components = extract_instances(merged, cloud_provider)
+
+    ms_components = _extract_machineset_groups(merged, cloud_provider)
+    if ms_components:
+        components.extend(ms_components)
+
+    cnv_vms = extract_cnv_workload_vms(merged)
+    components.extend(cnv_vms)
+
+    _add_bastion_fallback(components, env_type, cloud_provider, merged)
+
+    # Cloud normalization
+    cloud_display = CLOUD_MAP.get(cloud_provider, cloud_provider)
+    if not cloud_display or cloud_display.lower() == "none":
+        cloud_display = _normalize_cloud_from_instances(components)
+    if cloud_display and cloud_display.lower() == "none":
+        cloud_display = ""
+    for i, comp in enumerate(components):
+        comp_cloud = comp.cloud or ""
+        if not comp_cloud or comp_cloud.lower() == "none":
+            components[i] = comp.model_copy(update={"cloud": cloud_display})
+
+    metadata = _extract_metadata(merged, meta)
+
+    return DiscoveryResult(
+        ci_name=ci_name,
+        stage=stage,
+        components=components,
+        is_binder=bool(binder_components and not has_own_infra),
+        env_type=env_type or None,
+        cloud_provider=CLOUD_MAP.get(cloud_provider, cloud_provider) or cloud_display or None,
+        showroom_url=metadata["showroom_url"],
+        showroom_ref=metadata["showroom_ref"],
+        persistent=metadata["persistent"],
+        can_be_stopped=metadata["can_be_stopped"],
+        uses_maas=metadata["uses_maas"],
+        maas_models=metadata["maas_models"],
+        warnings=warnings,
+    )
+
+
+# ---------------------------------------------------------------------------
 # Binder discovery
 # ---------------------------------------------------------------------------
 

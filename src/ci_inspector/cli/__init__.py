@@ -8,7 +8,7 @@ from pathlib import Path
 import click
 
 from ci_inspector.core.catalog import GitSource
-from ci_inspector.core.discovery import discover
+from ci_inspector.core.discovery import discover, discover_from_merged
 from ci_inspector.core.models import DiscoveryResult
 from ci_inspector.core.thresholds import check_thresholds, load_config
 from ci_inspector.outputs.annotations_fmt import format_annotations
@@ -62,6 +62,123 @@ def analyze(ci_name, stage, source, repo_path, kubeconfig, fmt, pricing, pricing
         click.echo(format_json(result))
     else:
         click.echo(format_table(result))
+
+
+def _load_merged_yaml(file_path: str) -> tuple[dict, str]:
+    """Load YAML from a file path or stdin. Returns (data, source_path)."""
+    if file_path == "-":
+        import yaml
+        data = yaml.safe_load(sys.stdin.read()) or {}
+        return data, "<stdin>"
+    path = Path(file_path)
+    if not path.is_file():
+        click.echo(f"Error: file not found: {file_path}", err=True)
+        sys.exit(2)
+    import yaml
+    with path.open() as f:
+        data = yaml.safe_load(f) or {}
+    return data, str(path)
+
+
+def _infer_ci_name_stage(file_path: str, ci_name: str | None, stage: str | None) -> tuple[str, str]:
+    """Infer ci_name and stage from file path if not provided."""
+    if ci_name and stage:
+        return ci_name, stage
+    path = Path(file_path)
+    if not stage:
+        stage = path.stem if path.stem in ("prod", "dev", "event", "test", "common") else "prod"
+    if not ci_name:
+        ci_name = path.parent.name if path.parent.name != "." else path.stem
+    return ci_name, stage
+
+
+@main.command("analyze-merged")
+@click.argument("file_path")
+@click.option("--ci-name", default=None, help="CI name (inferred from path if omitted)")
+@click.option("--stage", default=None, help="Stage (inferred from filename if omitted)")
+@click.option("--format", "fmt", default="table", type=click.Choice(["json", "table"]))
+@click.option("--pricing/--no-pricing", default=False, help="Include cost estimates")
+@click.option("--pricing-json", default=None, help="Path to pricing JSON")
+def analyze_merged(file_path, ci_name, stage, fmt, pricing, pricing_json):
+    """Analyze infrastructure from a pre-merged YAML file.
+
+    FILE_PATH is the path to a merged YAML (output of agnosticv --merge), or - for stdin.
+    """
+    data, source_path = _load_merged_yaml(file_path)
+    ci_name, stage = _infer_ci_name_stage(file_path, ci_name, stage)
+
+    result = asyncio.run(discover_from_merged(ci_name, stage, data))
+
+    if result.errors:
+        for err in result.errors:
+            click.echo(f"Error: {err}", err=True)
+        sys.exit(2)
+
+    if pricing:
+        from ci_inspector.core.pricing import load_cnv_rates, resolve_pricing
+        config = load_cnv_rates(pricing_json)
+        updated = asyncio.run(resolve_pricing(result.components, config, pricing_json))
+        result = result.model_copy(update={"components": updated})
+
+    if fmt == "json":
+        click.echo(format_json(result))
+    else:
+        click.echo(format_table(result))
+
+
+@main.command("check-merged")
+@click.argument("file_path")
+@click.option("--ci-name", default=None, help="CI name (inferred from path if omitted)")
+@click.option("--stage", default=None, help="Stage (inferred from filename if omitted)")
+@click.option("--config", "config_path", default=None, help="Override config path")
+@click.option("--format", "fmt", default="table",
+              type=click.Choice(["json", "table", "annotations"]))
+@click.option("--fail-on", default="error", type=click.Choice(["warning", "error"]))
+def check_merged(file_path, ci_name, stage, config_path, fmt, fail_on):
+    """Check a pre-merged YAML file against threshold policies.
+
+    FILE_PATH is the path to a merged YAML (output of agnosticv --merge), or - for stdin.
+    """
+    data, source_path = _load_merged_yaml(file_path)
+    ci_name, stage = _infer_ci_name_stage(file_path, ci_name, stage)
+
+    result = asyncio.run(discover_from_merged(ci_name, stage, data))
+
+    if result.errors:
+        for err in result.errors:
+            click.echo(f"Error: {err}", err=True)
+        sys.exit(2)
+
+    if config_path:
+        cfg = load_config(Path(config_path), Path(config_path).parent)
+    else:
+        cfg = load_config(Path(source_path).parent, Path("."))
+
+    if cfg.thresholds is None:
+        click.echo("Thresholds disabled for this catalog item.")
+        sys.exit(0)
+
+    findings = check_thresholds(result, cfg.thresholds)
+
+    if fmt == "json":
+        click.echo(format_json(result, findings))
+    elif fmt == "annotations":
+        click.echo(format_annotations(findings, f"{ci_name}/{stage}.yaml"))
+    else:
+        if findings:
+            for f in findings:
+                icon = "X" if f.severity == "error" else "!"
+                click.echo(f"  [{icon}] {f.message}")
+        else:
+            click.echo("All checks passed.")
+
+    has_errors = any(f.severity == "error" for f in findings)
+    has_warnings = any(f.severity == "warning" for f in findings)
+
+    if has_errors:
+        sys.exit(1)
+    if fail_on == "warning" and has_warnings:
+        sys.exit(1)
 
 
 @main.command()
