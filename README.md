@@ -1,511 +1,268 @@
 # ci-inspector
 
-Catalog Item infrastructure inspector for Babylon/AgnosticV.
+Catalog Item infrastructure inspector for Babylon/AgnosticV. Extracts infrastructure requirements from CatalogItem definitions, checks them against policy thresholds, and reports cost estimates.
 
-Extracts and analyzes infrastructure requirements from CatalogItem definitions, validates against policy thresholds, and generates reports for capacity planning and cost estimation.
+## What It Does
 
-## Features
+Given a Babylon catalog item, ci-inspector tells you exactly what it provisions:
 
-- **Multi-source discovery**: Read from Git repos or live Kubernetes clusters
-- **Pattern-based extraction**: Automatically detects AWS, Azure, GCP, CNV, ROSA, and OCP pool resources
-- **Binder lab support**: Recursively discovers linked components and shared pools
-- **Threshold policies**: Cascading YAML-based rules for vCPU, memory, cost, and instance type validation
-- **Cost estimation**: AWS/Azure/GCP pricing via cloud APIs, CNV formula-based pricing
-- **Multiple output formats**: JSON, table, GitHub Actions annotations, Google Sheets
-- **GitHub Actions integration**: Automatically check changed catalog items in PRs
+```
+$ ci-inspector analyze summit-2026/lb1404-vmware-migration-cnv --stage event --source k8s --pricing
 
-## Installation
-
-### From PyPI
-
-```bash
-pip install ci-inspector
+ lb1404-vmware-migration-cnv (event) — ocp4-cluster / openshift_cnv
+┏━━━━━━━━━━━━━━━┳━━━━━━━━━━━━━━━┳━━━━━━━┳━━━━━━┳━━━━━━━━┳━━━━━━━━━━┓
+┃ Purpose       ┃ Instance Type ┃ Count ┃ vCPU ┃ Mem GB ┃  Cost/hr ┃
+┡━━━━━━━━━━━━━━━╇━━━━━━━━━━━━━━━╇━━━━━━━╇━━━━━━╇━━━━━━━━╇━━━━━━━━━━┩
+│ bastion       │ 2_core_4Gi    │     1 │    2 │      4 │    $0.21 │
+│ compute01     │ 16_core_16Gi  │     1 │   16 │     16 │    $1.61 │
+│ nfsserver     │ 4_core_4Gi    │     1 │    4 │      4 │    $0.40 │
+│ control-plane │ 16_core_32Gi  │     3 │   48 │     96 │    $1.67 │
+│ Totals        │               │       │   70 │    120 │ $7.22/hr │
+└───────────────┴───────────────┴───────┴──────┴────────┴──────────┘
 ```
 
-### From source
+It works three ways:
+- **From the Babylon cluster** (`--source k8s`) — fetches CatalogItem and AVC CRDs live
+- **From a merged YAML** (`analyze-merged`) — accepts output of `agnosticv --merge`, for CI pipelines
+- **From a git checkout** (`--source git`) — reads AgnosticV YAML files directly
+
+## Install
 
 ```bash
-git clone https://github.com/redhat-cop/ci-inspector.git
+pip install git+https://github.com/rhpds/ci-inspector.git
+```
+
+Or run from the repo:
+
+```bash
+git clone https://github.com/rhpds/ci-inspector.git
 cd ci-inspector
-pip install -e .
+./ci-inspector --help
 ```
 
-### Optional dependencies
+## CLI Commands
+
+### `analyze` — What does this CI provision?
 
 ```bash
-# For Kubernetes source
-pip install ci-inspector[k8s]
+# From Babylon cluster
+ci-inspector analyze <ci-name> --stage event --source k8s \
+  --kubeconfig ~/secrets/ocp-us-west-2.kubeconfig --pricing
 
-# For Google Sheets output
-pip install ci-inspector[sheets]
+# From git checkout
+ci-inspector analyze <ci-name> --stage prod --source git --repo-path ~/agnosticv
 
-# For development (pytest, ruff, etc.)
-pip install ci-inspector[dev]
-
-# All optional dependencies
-pip install ci-inspector[all]
+# Output as JSON
+ci-inspector analyze <ci-name> --source k8s --format json
 ```
 
-## Quick Start
+### `analyze-merged` — Analyze pre-merged YAML
 
-### Analyze a catalog item
+For CI pipelines where `agnosticv --merge` has already produced the merged config:
 
 ```bash
-# From local Git repo
-ci-inspector analyze my-workshop --repo-path /path/to/agnosticv
+# From a file
+agnosticv --git=false --merge summit-2026/my-lab/event.yaml | sed '/^#/d' > /tmp/merged.yaml
+ci-inspector analyze-merged /tmp/merged.yaml --ci-name my-lab --stage event --pricing
 
-# From Kubernetes cluster
-ci-inspector analyze my-workshop --source k8s --kubeconfig ~/.kube/config
-
-# JSON output
-ci-inspector analyze my-workshop --format json
-
-# Include cost estimates
-ci-inspector analyze my-workshop --pricing
+# From stdin
+agnosticv --git=false --merge summit-2026/my-lab/event.yaml | sed '/^#/d' \
+  | ci-inspector analyze-merged - --ci-name my-lab --stage event --format table
 ```
 
-### Check against policies
+### `check` / `check-merged` — Does it pass policy thresholds?
 
 ```bash
-# Check a single catalog item
-ci-inspector check my-workshop --repo-path /path/to/agnosticv
+# Check against thresholds (exits 1 if errors found)
+ci-inspector check <ci-name> --stage event --source k8s --format annotations
 
-# Check all catalog items
-ci-inspector check-all --repo-path /path/to/agnosticv
-
-# Custom config location
-ci-inspector check my-workshop --config /path/to/.ci-inspector.yml
-
-# GitHub Actions annotations format
-ci-inspector check my-workshop --format annotations
-
-# Fail on warnings (default: fail on errors only)
-ci-inspector check my-workshop --fail-on warning
+# Check a pre-merged YAML
+ci-inspector check-merged /tmp/merged.yaml --ci-name my-lab --stage event
 ```
 
-### Detect changed catalog items
+### `check-all` — Check every CI in a repo
 
 ```bash
-# Detect what changed in a PR
-ci-inspector detect-changes --base origin/main
-
-# Output:
-# my-workshop
-# another-lab
+ci-inspector check-all --source git --repo-path ~/agnosticv
 ```
 
-### Scan all catalog items
+### `scan` — Export all CIs
 
 ```bash
-# JSON output
-ci-inspector scan --format json
+# JSON dump of all CIs
+ci-inspector scan --source k8s --format json --pricing
 
-# Table output
-ci-inspector scan --format table
-
-# Google Sheets output
-ci-inspector scan --format sheets --sheet-id <spreadsheet-id> --credentials /path/to/sa-key.json
-
-# Filter by glob pattern
-ci-inspector scan --filter "ocp*" --format json
-
-# Include pricing
-ci-inspector scan --pricing
-
-# Prune removed CIs from sheet
-ci-inspector scan --format sheets --sheet-id <id> --credentials <key> --prune
+# Sync to Google Sheets
+ci-inspector scan --source k8s --format sheets --sheet-id <id> --credentials sa-key.json
 ```
 
-## Configuration
+### `detect-changes` — What CIs changed in this PR?
 
-### Threshold policies
+```bash
+ci-inspector detect-changes --base origin/master
+```
 
-Create `.ci-inspector.yml` files in your repo for cascading threshold policies:
+## Threshold Configuration
+
+Create a `.ci-inspector.yml` in your AgnosticV repo. Configs cascade from repo root to CI directory — child overrides parent.
 
 ```yaml
-# Root-level: /repo/.ci-inspector.yml
 thresholds:
-  max_vcpus: 64
-  max_memory_gb: 256
-  max_cost_per_hour: 10.00
-  flagged_instance_types:
-    - pattern: "p3.*"
-      severity: warning
-      message: "GPU instance requires approval"
-    - pattern: "metal-.*"
-      severity: error
-      message: "Bare metal instances not allowed"
-  
+  # severity: warning = annotate PRs, don't block
+  # severity: error   = block PRs that exceed thresholds
+  severity: warning
+
+  max_vcpus: 128
+  max_memory_gb: 512
+  max_instances: 20
+  max_cost_per_hour: 25.00
+  max_storage_gb: 2000
+
   # Per-cloud overrides
-  per_cloud:
-    AWS:
-      max_vcpus: 128
+  clouds:
     CNV:
       max_vcpus: 256
+    AWS:
+      max_cost_per_hour: 30.00
 
-# Optional: disable thresholds for specific catalog items
+  # Flag specific instance types
+  flagged_instance_types:
+    - pattern: "p3.*"
+      severity: warning
+      message: "GPU instance — confirm this is intentional"
+    - pattern: "*.metal"
+      severity: warning
+      message: "Bare metal instance — confirm this is intentional"
+
 ignore:
-  - "tests/**"
-  - "legacy-labs/*"
-
-# Optional: pricing config
-pricing:
-  cnv:
-    cpu_per_core_per_hour: 0.0711
-    memory_per_gb_per_hour: 0.00175
-    storage_per_gb_per_hour: 0.00012
+  - "includes/**"
+  - "EXAMPLE_ACCOUNT/**"
 ```
 
-**Cascading rules**: Configs at `/my-workshop/.ci-inspector.yml` override `/summit/.ci-inspector.yml`, which overrides `/.ci-inspector.yml`.
+### Cascading configs
 
-**Disabling thresholds**: Set `thresholds: null` in a more specific config to disable checks for that catalog item.
+Place `.ci-inspector.yml` at any level — child configs override parent:
 
-### Flagged instance types
+```
+agnosticv/
+├── .ci-inspector.yml              # Repo-wide defaults
+├── summit-2026/
+│   ├── .ci-inspector.yml          # Tighter limits for Summit
+│   └── my-workshop/
+│       └── .ci-inspector.yml      # This CI needs more resources
+```
 
-Use glob patterns to flag or block specific instance types:
+Merge rules:
+- Scalars (max_vcpus, severity): child wins
+- Lists (flagged_instance_types): child replaces entirely
+- ignore: merged (union of all levels)
+- `thresholds: null`: disables checking for that CI
+
+## Pricing
+
+All pricing data is bundled in `data/pricing.json` — no API calls needed.
+
+- **1,072 instance types** (AWS, Azure, GCP, Equinix, IBM) with vCPU, memory, and per-region costs
+- **CNV** uses formula-based pricing (CPU $0.0969/core/hr, Memory $0.00365/GB/hr)
+- Override with `--pricing-json /path/to/custom.json`
+
+Use `--pricing` flag to include cost estimates in output.
+
+## GitHub Actions Integration
+
+### How it works
+
+ci-inspector integrates into the existing AgnosticV `static-tests.sh` PR pipeline:
+
+1. The pipeline already runs `agnosticv --merge` on every changed catalog item
+2. ci-inspector receives the merged YAML and extracts infrastructure requirements
+3. Findings are posted as **inline PR annotations** (warnings appear directly on the diff)
+4. Findings are also included in the PR comment alongside existing checks
+
+### Setup
+
+1. **Add ci-inspector to `.tests/requirements.txt`**:
+
+```
+ci-inspector @ git+https://github.com/rhpds/ci-inspector.git
+```
+
+2. **Add to `.tests/static-tests.sh`** after the merge loop saves merged outputs:
+
+```bash
+# After babylon_checks, run ci-inspector on merged outputs
+if command -v ci-inspector &>/dev/null; then
+    for merged_file in ${merged_dir}/*; do
+        [ -f "$merged_file" ] || continue
+        ci_name=$(...)  # extract from filename
+        stage=$(...)    # extract from filename
+        ci-inspector check-merged "$merged_file" \
+            --ci-name "$ci_name" --stage "$stage" \
+            --format annotations
+    done
+fi
+```
+
+3. **Add `.ci-inspector.yml`** to the repo root with your thresholds.
+
+### PR annotation output
+
+When a CI exceeds thresholds, developers see warnings inline on their PR diff:
+
+```
+⚠️ CI Inspector: 96 vCPUs (CNV) exceeds threshold of 128
+⚠️ CI Inspector: Bare metal instance i3.metal — confirm this is intentional
+```
+
+### Severity control
+
+Start with `severity: warning` to annotate without blocking:
+
+```yaml
+# .ci-inspector.yml
+thresholds:
+  severity: warning    # warning = don't block PRs
+```
+
+When ready to enforce, change to `severity: error`:
 
 ```yaml
 thresholds:
-  flagged_instance_types:
-    # Warning: requires manual approval
-    - pattern: "p3.*"
-      severity: warning
-      message: "GPU instance - ensure quota available"
-    
-    # Error: blocked entirely
-    - pattern: "x1e.*"
-      severity: error
-      message: "High-memory instances require VP approval"
-    
-    # Multiple patterns
-    - pattern: "m5*.metal"
-      severity: error
-      message: "Bare metal instances not supported"
+  severity: error      # error = block PRs that exceed thresholds
 ```
 
-## GitHub Actions
+### Standalone GitHub Action
 
-### Automatic PR checks
-
-Add to `.github/workflows/ci-inspector.yml`:
+Alternatively, use the pre-built action without modifying `static-tests.sh`:
 
 ```yaml
-name: CI Inspector
-
+# .github/workflows/ci-inspector.yml
+name: Infrastructure Check
 on:
   pull_request:
-    paths:
-      - '**/*.yml'
-      - '**/*.yaml'
-
-permissions:
-  pull-requests: write
+    paths: ['**/*.yml', '**/*.yaml']
 
 jobs:
   check:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-        with:
-          fetch-depth: 0  # Need full history for detect-changes
-
-      - uses: redhat-cop/ci-inspector@v1
-        with:
-          source: git
-          fail-on: error  # or "warning"
+      - uses: rhpds/ci-inspector@main
 ```
 
-### Advanced configuration
+## Data Sources
 
-```yaml
-- uses: redhat-cop/ci-inspector@v1
-  with:
-    source: git
-    config: .ci-inspector.yml  # Override cascading lookup
-    fail-on: warning
-    pricing: true
-    python-version: '3.12'
-```
-
-### Kubernetes source in GitHub Actions
-
-```yaml
-- uses: redhat-cop/ci-inspector@v1
-  with:
-    source: k8s
-  env:
-    KUBECONFIG: ${{ secrets.KUBECONFIG_CONTENT }}
-```
-
-## CLI Reference
-
-### `ci-inspector analyze`
-
-Analyze infrastructure for a catalog item.
-
-**Arguments:**
-- `CI_NAME`: Catalog item name (required)
-
-**Options:**
-- `--stage TEXT`: Stage (prod, dev, event) [default: prod]
-- `--source [git|k8s]`: Data source [default: git]
-- `--repo-path TEXT`: Path to AgnosticV repo checkout [default: .]
-- `--kubeconfig TEXT`: Kubeconfig path (required for k8s source)
-- `--format [json|table]`: Output format [default: table]
-- `--pricing / --no-pricing`: Include cost estimates [default: no-pricing]
-
-**Examples:**
-```bash
-ci-inspector analyze my-workshop
-ci-inspector analyze my-workshop --stage dev
-ci-inspector analyze my-workshop --format json --pricing
-ci-inspector analyze my-workshop --source k8s --kubeconfig ~/.kube/config
-```
-
-### `ci-inspector check`
-
-Check a catalog item against threshold policies.
-
-**Arguments:**
-- `CI_NAME`: Catalog item name (required)
-
-**Options:**
-- `--stage TEXT`: Stage [default: prod]
-- `--source [git|k8s]`: Data source [default: git]
-- `--repo-path TEXT`: Path to AgnosticV repo [default: .]
-- `--kubeconfig TEXT`: Kubeconfig path
-- `--config TEXT`: Override config path (cascading lookup by default)
-- `--format [json|table|annotations]`: Output format [default: table]
-- `--fail-on [warning|error]`: Fail on severity level [default: error]
-
-**Examples:**
-```bash
-ci-inspector check my-workshop
-ci-inspector check my-workshop --fail-on warning
-ci-inspector check my-workshop --format annotations
-ci-inspector check my-workshop --config /custom/.ci-inspector.yml
-```
-
-### `ci-inspector check-all`
-
-Check all catalog items against threshold policies.
-
-**Options:**
-- `--source [git|k8s]`: Data source [default: git]
-- `--repo-path TEXT`: Path to AgnosticV repo [default: .]
-- `--kubeconfig TEXT`: Kubeconfig path
-- `--format [json|table|annotations]`: Output format [default: table]
-- `--fail-on [warning|error]`: Fail on severity level [default: error]
-
-**Examples:**
-```bash
-ci-inspector check-all
-ci-inspector check-all --fail-on warning
-ci-inspector check-all --format annotations
-```
-
-**Exit codes:**
-- `0`: All checks passed
-- `1`: At least one violation found
-
-### `ci-inspector detect-changes`
-
-Detect changed catalog items between git refs (for CI/CD).
-
-**Options:**
-- `--base TEXT`: Base git ref to compare against (required)
-
-**Examples:**
-```bash
-ci-inspector detect-changes --base origin/main
-ci-inspector detect-changes --base HEAD~1
-```
-
-**Output:**
-```
-my-workshop
-another-lab
-```
-
-### `ci-inspector scan`
-
-Scan all catalog items (bulk discovery).
-
-**Options:**
-- `--source [git|k8s]`: Data source [default: git]
-- `--repo-path TEXT`: Path to AgnosticV repo [default: .]
-- `--kubeconfig TEXT`: Kubeconfig path
-- `--format [json|table|sheets]`: Output format [default: json]
-- `--sheet-id TEXT`: Google Sheets spreadsheet ID (required for sheets format)
-- `--credentials TEXT`: Google SA key path (required for sheets format)
-- `--pricing / --no-pricing`: Include cost estimates [default: no-pricing]
-- `--filter TEXT`: Filter by CI name glob (e.g., `ocp*`, `*-prod`)
-- `--prune / --no-prune`: Hard-delete removed CIs from sheet [default: no-prune]
-
-**Examples:**
-```bash
-ci-inspector scan --format json
-ci-inspector scan --format table --filter "ocp*"
-ci-inspector scan --format sheets --sheet-id 1A2B3C --credentials sa-key.json
-ci-inspector scan --pricing --filter "summit/*"
-```
-
-## Architecture
-
-### Discovery pipeline
-
-1. **Fetch catalog item**: Retrieve from Git repo or K8s cluster
-2. **Extract metadata**: Parse `__meta__.deployer.scm_url`, `env_type`, `cloud_provider`
-3. **Read AgnosticD defaults**: Merge base and cloud-specific defaults from agnosticd/agnosticd-v2
-4. **Detect binder pattern**: Check for `__meta__.components` without own instances
-5. **Extract instances**: Apply pattern-based extraction for all cloud types
-6. **Extract CNV workload VMs**: Parse `cnv_instances` for CNV-hosted VMs
-7. **Resolve linked components**: Recursively discover binder sub-components
-8. **Return result**: DiscoveryResult with components, totals, warnings, errors
-
-### Extraction patterns
-
-- **Pattern A**: Cloud instances (`cloud_instances`, `instances`)
-- **Pattern B**: Role variables (`bastion_instance_type`, `worker_instance_count`)
-- **Pattern C**: CNV instances (`cnv_instances`)
-- **Pattern D**: OCP pool clusters (`__meta__.components` → `ocp-cluster-cnv-pools`)
-- **Pattern E**: ROSA clusters (`rosa_cluster_size`, `rosa_machine_type`, `rosa_compute_nodes`)
-
-### Supported clouds
-
-- AWS (EC2)
-- Azure
-- GCP (Google Cloud)
-- CNV (OpenShift Virtualization)
-- ROSA (Red Hat OpenShift Service on AWS)
-- OCP Pools (shared cluster pools)
+| Source | Flag | When to use |
+|--------|------|-------------|
+| K8s cluster | `--source k8s --kubeconfig PATH` | Spot-checking live catalog, full binder resolution |
+| Merged YAML | `analyze-merged FILE` | CI pipelines with `agnosticv --merge` |
+| Git checkout | `--source git --repo-path PATH` | Offline analysis (limited — no `#include` resolution) |
 
 ## Development
 
-### Setup
-
 ```bash
-git clone https://github.com/redhat-cop/ci-inspector.git
+git clone https://github.com/rhpds/ci-inspector.git
 cd ci-inspector
-python3 -m venv .venv
-source .venv/bin/activate
 pip install -e ".[dev]"
-```
-
-### Run tests
-
-```bash
-# All tests
 pytest tests/ -v
-
-# Specific test file
-pytest tests/test_integration.py -v
-
-# With coverage
-pytest tests/ --cov=ci_inspector --cov-report=term-missing
 ```
-
-### Linting
-
-```bash
-# Check
-ruff check src/ tests/
-
-# Auto-fix
-ruff check src/ tests/ --fix
-```
-
-### Test fixtures
-
-- `tests/fixtures/agnosticv/`: Mock AgnosticV repo with sample catalog items
-- `tests/fixtures/agnosticd/`: AgnosticD defaults fixtures
-- `tests/fixtures/configs/`: Cascading `.ci-inspector.yml` examples
-- `tests/fixtures/discovery/`: YAML fixtures for each extraction pattern
-
-## Examples
-
-### Full analysis with pricing
-
-```bash
-ci-inspector analyze summit-ocp-workshop --pricing --format json > analysis.json
-```
-
-### Batch validation with warnings
-
-```bash
-ci-inspector check-all --fail-on warning --format table
-```
-
-### CI/CD integration
-
-```bash
-#!/bin/bash
-BASE_SHA="${GITHUB_EVENT_PULL_REQUEST_BASE_SHA}"
-CHANGED=$(ci-inspector detect-changes --base "$BASE_SHA")
-
-EXIT_CODE=0
-for CI_NAME in $CHANGED; do
-  echo "Checking $CI_NAME..."
-  ci-inspector check "$CI_NAME" --format annotations || EXIT_CODE=$?
-done
-
-exit $EXIT_CODE
-```
-
-### Google Sheets export
-
-```bash
-ci-inspector scan \
-  --format sheets \
-  --sheet-id 1A2B3C4D5E6F7G8H9I0J \
-  --credentials /path/to/sa-key.json \
-  --pricing \
-  --filter "summit/*" \
-  --prune
-```
-
-## Troubleshooting
-
-### "Could not find catalog item"
-
-- Verify the catalog item exists in the repo or cluster
-- Check the correct `--stage` (prod, dev, event)
-- For K8s source, verify kubeconfig and namespace access
-
-### "No pricing found for instance type"
-
-- AWS: Pricing API may be unavailable or instance type deprecated
-- Azure/GCP: Requires live API access (no offline fallback)
-- CNV: Uses formula-based pricing (always available)
-
-### "Threshold violations not detected"
-
-- Check `.ci-inspector.yml` is in the expected location
-- Verify cascading config hierarchy (repo root → group → catalog item)
-- Ensure `thresholds:` is not set to `null` (which disables checks)
-
-### GitHub Action shows no changed items
-
-- Verify `fetch-depth: 0` in checkout step (required for git history)
-- Check that PR has a valid base SHA
-- Ensure workflow triggers on YAML file changes
-
-## License
-
-Apache-2.0
-
-## Contributing
-
-Contributions welcome! Please open an issue or PR on GitHub.
-
-1. Fork the repo
-2. Create a feature branch
-3. Make your changes
-4. Run tests: `pytest tests/ -v`
-5. Run linting: `ruff check src/ tests/`
-6. Submit a PR
-
-## Support
-
-- GitHub Issues: https://github.com/redhat-cop/ci-inspector/issues
-- Documentation: https://github.com/redhat-cop/ci-inspector/blob/main/README.md
