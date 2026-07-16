@@ -70,6 +70,41 @@ agnosticv --git=false --merge summit-2026/my-lab/event.yaml | sed '/^#/d' \
   | ci-inspector analyze-merged - --ci-name my-lab --stage event --format table
 ```
 
+### `validate-merged` — Informational size + threshold check
+
+Shows infrastructure size summary and threshold warnings **without failing the pipeline** — always exits 0. Designed for gradual rollout before enforcing hard limits with `check-merged`.
+
+```bash
+# From a merged YAML file
+agnosticv --git=false --merge summit-2026/my-lab/event.yaml | sed '/^#/d' \
+  | ci-inspector validate-merged - --ci-name my-lab --stage event
+
+# With cost estimates
+ci-inspector validate-merged /tmp/merged.yaml --ci-name my-lab --pricing
+
+# GitHub Actions annotations (warnings only, never errors)
+ci-inspector validate-merged /tmp/merged.yaml --ci-name my-lab --format annotations
+
+# JSON for programmatic consumption
+ci-inspector validate-merged /tmp/merged.yaml --ci-name my-lab --format json
+```
+
+Example output:
+
+```
+my-lab (event) — Summary
+  48 vCPUs · 192 GB RAM · 6 instances
+
+┌─────────┬──────────────┬───────┬──────┬────────┬─────────┐
+│ Purpose │ Instance Type│ Count │ vCPU │ Mem GB │ Cost/hr │
+│ ...     │              │       │      │        │         │
+└─────────┴──────────────┴───────┴──────┴────────┴─────────┘
+
+Validation:
+  [!] 48 vCPUs (AWS) exceeds threshold of 32
+  All other checks passed.
+```
+
 ### `check` / `check-merged` — Does it pass policy thresholds?
 
 ```bash
@@ -214,21 +249,34 @@ When a CI exceeds thresholds, developers see warnings inline on their PR diff:
 ⚠️ CI Inspector: Bare metal instance i3.metal — confirm this is intentional
 ```
 
-### Severity control
+### Rollout strategy
 
-Start with `severity: warning` to annotate without blocking:
+**Phase 1 — Informational only** (recommended starting point):
 
-```yaml
-# .ci-inspector.yml
-thresholds:
-  severity: warning    # warning = don't block PRs
+Use `validate-merged` in the CI pipeline. Authors see their CI's size and any threshold warnings, but the pipeline never fails:
+
+```bash
+ci-inspector validate-merged "$merged_file" \
+    --ci-name "$ci_name" --stage "$stage" \
+    --format annotations
 ```
 
-When ready to enforce, change to `severity: error`:
+**Phase 2 — Warn but don't block:**
+
+Switch to `check-merged` with `severity: warning` in `.ci-inspector.yml`:
 
 ```yaml
 thresholds:
-  severity: error      # error = block PRs that exceed thresholds
+  severity: warning    # annotate PRs, don't block
+```
+
+**Phase 3 — Enforce:**
+
+Change to `severity: error` to block PRs that exceed thresholds:
+
+```yaml
+thresholds:
+  severity: error      # block PRs that exceed thresholds
 ```
 
 ### Standalone GitHub Action
@@ -255,7 +303,7 @@ jobs:
 | Source | Flag | When to use |
 |--------|------|-------------|
 | K8s cluster | `--source k8s --kubeconfig PATH` | Spot-checking live catalog, full binder resolution |
-| Merged YAML | `analyze-merged FILE` | CI pipelines with `agnosticv --merge` |
+| Merged YAML | `analyze-merged FILE` / `validate-merged FILE` | CI pipelines with `agnosticv --merge` |
 | Git checkout | `--source git --repo-path PATH` | Offline analysis (limited — no `#include` resolution) |
 
 ## Development
