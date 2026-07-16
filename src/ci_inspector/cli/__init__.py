@@ -13,7 +13,7 @@ from ci_inspector.core.models import DiscoveryResult
 from ci_inspector.core.thresholds import check_thresholds, load_config
 from ci_inspector.outputs.annotations_fmt import format_annotations
 from ci_inspector.outputs.json_fmt import format_json
-from ci_inspector.outputs.table_fmt import format_table
+from ci_inspector.outputs.table_fmt import format_summary, format_table, format_validation
 
 
 def _get_source(source: str, repo_path: str, kubeconfig: str | None):
@@ -179,6 +179,74 @@ def check_merged(file_path, ci_name, stage, config_path, fmt, fail_on):
         sys.exit(1)
     if fail_on == "warning" and has_warnings:
         sys.exit(1)
+
+
+@main.command("validate-merged")
+@click.argument("file_path")
+@click.option("--ci-name", default=None, help="CI name (inferred from path if omitted)")
+@click.option("--stage", default=None, help="Stage (inferred from filename if omitted)")
+@click.option("--config", "config_path", default=None, help="Override config path")
+@click.option("--format", "fmt", default="table",
+              type=click.Choice(["json", "table", "annotations"]))
+@click.option("--pricing/--no-pricing", default=False, help="Include cost estimates")
+@click.option("--pricing-json", default=None, help="Path to pricing JSON")
+def validate_merged(file_path, ci_name, stage, config_path, fmt, pricing, pricing_json):
+    """Validate a pre-merged YAML file (informational only, never fails).
+
+    Shows infrastructure size summary and threshold warnings without
+    blocking the pipeline. FILE_PATH is the path to a merged YAML
+    (output of agnosticv --merge), or - for stdin.
+    """
+    data, source_path = _load_merged_yaml(file_path)
+    ci_name, stage = _infer_ci_name_stage(file_path, ci_name, stage)
+
+    result = asyncio.run(discover_from_merged(ci_name, stage, data))
+
+    if result.errors:
+        for err in result.errors:
+            click.echo(f"Warning: {err}", err=True)
+
+    if pricing:
+        from ci_inspector.core.pricing import load_cnv_rates, resolve_pricing
+        config = load_cnv_rates(pricing_json)
+        updated = asyncio.run(resolve_pricing(result.components, config, pricing_json))
+        result = result.model_copy(update={"components": updated})
+
+    if config_path:
+        cfg = load_config(Path(config_path), Path(config_path).parent)
+    else:
+        cfg = load_config(Path(source_path).parent, Path("."))
+
+    findings = []
+    if cfg.thresholds is not None:
+        findings = check_thresholds(result, cfg.thresholds)
+        findings = [
+            f.model_copy(update={"severity": "warning"}) if f.severity == "error" else f
+            for f in findings
+        ]
+
+    if fmt == "json":
+        import json
+        json_data = result.model_dump(mode="json")
+        total_instances = sum(c.count for c in result.components)
+        json_data["summary"] = {
+            "total_vcpus": result.total_vcpus,
+            "total_memory_gb": result.total_memory_gb,
+            "total_instances": total_instances,
+            "total_storage_gb": sum(c.storage_gb * c.count for c in result.components),
+            "total_cost_per_hour": str(result.total_cost_per_hour) if result.total_cost_per_hour else None,
+        }
+        json_data["findings"] = [f.model_dump() for f in findings]
+        click.echo(json.dumps(json_data, indent=2, default=str))
+    elif fmt == "annotations":
+        for f in findings:
+            severity = "warning" if f.severity == "warning" else "notice"
+            click.echo(f"::{severity} file={ci_name}/{stage}.yaml,line=1::CI Inspector: {f.message}")
+    else:
+        click.echo(format_summary(result))
+        click.echo()
+        click.echo(format_table(result))
+        click.echo(format_validation(findings))
 
 
 @main.command()

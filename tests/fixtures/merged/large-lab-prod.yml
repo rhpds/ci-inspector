@@ -1,0 +1,12 @@
+---
+cloud_provider: ec2
+env_type: ocp4-cluster
+bastion_instance_type: t3a.medium
+worker_instance_type: m5.4xlarge
+worker_instance_count: 15
+__meta__:
+  catalog:
+    display_name: Large Lab
+  deployer:
+    scm_url: https://github.com/redhat-cop/agnosticd.git
+    scm_ref: main
