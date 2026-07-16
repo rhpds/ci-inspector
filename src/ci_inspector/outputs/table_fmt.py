@@ -3,7 +3,7 @@ from __future__ import annotations
 from rich.console import Console
 from rich.table import Table
 
-from ci_inspector.core.models import DiscoveryResult
+from ci_inspector.core.models import DiscoveryResult, Finding
 
 
 def format_table(result: DiscoveryResult) -> str:
@@ -52,3 +52,26 @@ def format_table(result: DiscoveryResult) -> str:
     with console.capture() as capture:
         console.print(table)
     return capture.get()
+
+
+def format_summary(result: DiscoveryResult) -> str:
+    total_instances = sum(c.count for c in result.components)
+    parts = [
+        f"{result.total_vcpus} vCPUs",
+        f"{result.total_memory_gb} GB RAM",
+        f"{total_instances} instances",
+    ]
+    if result.total_cost_per_hour is not None:
+        parts.append(f"${result.total_cost_per_hour:.2f}/hr")
+
+    return f"{result.ci_name} ({result.stage}) — Summary\n  {' · '.join(parts)}"
+
+
+def format_validation(findings: list[Finding]) -> str:
+    if not findings:
+        return "Validation:\n  All checks passed."
+    lines = ["Validation:"]
+    for f in findings:
+        icon = "[!]" if f.severity == "warning" else "[i]"
+        lines.append(f"  {icon} {f.message}")
+    return "\n".join(lines)

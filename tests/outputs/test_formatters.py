@@ -3,7 +3,7 @@ from decimal import Decimal
 
 from ci_inspector.core.models import Component, DiscoveryResult, Finding
 from ci_inspector.outputs.json_fmt import format_json
-from ci_inspector.outputs.table_fmt import format_table
+from ci_inspector.outputs.table_fmt import format_table, format_summary, format_validation
 from ci_inspector.outputs.annotations_fmt import format_annotations
 
 
@@ -71,3 +71,90 @@ class TestAnnotationsFormatter:
                             threshold_value="64")]
         output = format_annotations(findings, "test.yml")
         assert "::error file=test.yml" in output
+
+
+class TestFormatSummary:
+    def _make_result(self, **kwargs) -> DiscoveryResult:
+        defaults = dict(
+            ci_name="test-lab", stage="prod", components=[], is_binder=False,
+        )
+        defaults.update(kwargs)
+        return DiscoveryResult(**defaults)
+
+    def test_basic_summary(self):
+        result = self._make_result(components=[
+            Component(purpose="bastion", instance_type="t3a.medium",
+                      count=1, cpu=2, memory_gb=4, storage_gb=0,
+                      cloud="AWS", os="Linux"),
+            Component(purpose="worker", instance_type="m5.xlarge",
+                      count=3, cpu=4, memory_gb=16, storage_gb=0,
+                      cloud="AWS", os="RHCOS"),
+        ])
+        summary = format_summary(result)
+        assert "test-lab (prod)" in summary
+        assert "14 vCPUs" in summary
+        assert "52 GB RAM" in summary
+        assert "4 instances" in summary
+
+    def test_summary_with_cost(self):
+        result = self._make_result(components=[
+            Component(purpose="worker", instance_type="m5.xlarge",
+                      count=2, cpu=4, memory_gb=16, storage_gb=0,
+                      cloud="AWS", os="RHCOS",
+                      cost_per_hour=Decimal("0.192")),
+        ])
+        summary = format_summary(result)
+        assert "$0.38/hr" in summary
+
+    def test_summary_without_cost(self):
+        result = self._make_result(components=[
+            Component(purpose="worker", instance_type="m5.xlarge",
+                      count=1, cpu=4, memory_gb=16, storage_gb=0,
+                      cloud="AWS", os="RHCOS"),
+        ])
+        summary = format_summary(result)
+        assert "/hr" not in summary
+
+    def test_summary_empty_components(self):
+        result = self._make_result(components=[])
+        summary = format_summary(result)
+        assert "0 vCPUs" in summary
+        assert "0 instances" in summary
+
+
+class TestFormatValidation:
+    def test_no_findings(self):
+        output = format_validation([])
+        assert "All checks passed" in output
+
+    def test_warning_findings(self):
+        findings = [
+            Finding(severity="warning", rule="max_vcpus",
+                    message="80 vCPUs (AWS) exceeds threshold of 64",
+                    actual_value="80 vCPUs", threshold_value="64 vCPUs"),
+        ]
+        output = format_validation(findings)
+        assert "[!]" in output
+        assert "80 vCPUs" in output
+
+    def test_info_findings(self):
+        findings = [
+            Finding(severity="info", rule="flagged_instance_type",
+                    message="p3.2xlarge: GPU instance",
+                    actual_value="p3.2xlarge", threshold_value="p3.*"),
+        ]
+        output = format_validation(findings)
+        assert "[i]" in output
+
+    def test_mixed_findings(self):
+        findings = [
+            Finding(severity="warning", rule="max_vcpus",
+                    message="80 vCPUs exceeds 64",
+                    actual_value="80", threshold_value="64"),
+            Finding(severity="info", rule="flagged_instance_type",
+                    message="GPU instance",
+                    actual_value="p3.2xlarge", threshold_value="p3.*"),
+        ]
+        output = format_validation(findings)
+        assert "[!]" in output
+        assert "[i]" in output
