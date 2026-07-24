@@ -70,7 +70,6 @@ class TestValidateMerged:
             "validate-merged",
             str(MERGED_FIXTURES / "my-workshop-prod.yml"),
             "--ci-name", "my-workshop",
-            "--stage", "prod",
         ])
         assert result.exit_code == 0
         assert "Summary" in result.output
@@ -82,7 +81,6 @@ class TestValidateMerged:
             "validate-merged",
             str(MERGED_FIXTURES / "large-lab-prod.yml"),
             "--ci-name", "large-lab",
-            "--stage", "prod",
         ])
         assert result.exit_code == 0
         assert "[!]" in result.output
@@ -93,7 +91,6 @@ class TestValidateMerged:
             "validate-merged",
             str(MERGED_FIXTURES / "large-lab-prod.yml"),
             "--ci-name", "large-lab",
-            "--stage", "prod",
         ])
         assert result.exit_code == 0
         assert "[X]" not in result.output
@@ -119,7 +116,6 @@ class TestValidateMerged:
             "validate-merged",
             str(MERGED_FIXTURES / "large-lab-prod.yml"),
             "--ci-name", "large-lab",
-            "--stage", "prod",
             "--format", "annotations",
         ])
         assert result.exit_code == 0
@@ -132,7 +128,6 @@ class TestValidateMerged:
         result = runner.invoke(main, [
             "validate-merged", "-",
             "--ci-name", "my-workshop",
-            "--stage", "prod",
         ], input=fixture)
         assert result.exit_code == 0
         assert "Summary" in result.output

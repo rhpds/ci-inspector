@@ -9,11 +9,13 @@ import click
 
 from ci_inspector.core.catalog import GitSource
 from ci_inspector.core.discovery import discover, discover_from_merged
-from ci_inspector.core.models import DiscoveryResult
+from ci_inspector.core.models import DiscoveryResult, Finding
 from ci_inspector.core.thresholds import check_thresholds, load_config
 from ci_inspector.outputs.annotations_fmt import format_annotations
 from ci_inspector.outputs.json_fmt import format_json
-from ci_inspector.outputs.table_fmt import format_summary, format_table, format_validation
+from ci_inspector.outputs.table_fmt import (
+    format_summary, format_table, format_validation, group_results,
+)
 
 
 def _get_source(source: str, repo_path: str, kubeconfig: str | None):
@@ -182,71 +184,92 @@ def check_merged(file_path, ci_name, stage, config_path, fmt, fail_on):
 
 
 @main.command("validate-merged")
-@click.argument("file_path")
+@click.argument("file_paths", nargs=-1, required=True)
 @click.option("--ci-name", default=None, help="CI name (inferred from path if omitted)")
-@click.option("--stage", default=None, help="Stage (inferred from filename if omitted)")
 @click.option("--config", "config_path", default=None, help="Override config path")
 @click.option("--format", "fmt", default="table",
               type=click.Choice(["json", "table", "annotations"]))
 @click.option("--pricing/--no-pricing", default=False, help="Include cost estimates")
 @click.option("--pricing-json", default=None, help="Path to pricing JSON")
-def validate_merged(file_path, ci_name, stage, config_path, fmt, pricing, pricing_json):
-    """Validate a pre-merged YAML file (informational only, never fails).
+def validate_merged(file_paths, ci_name, config_path, fmt, pricing, pricing_json):
+    """Validate pre-merged YAML files (informational only, never fails).
 
-    Shows infrastructure size summary and threshold warnings without
-    blocking the pipeline. FILE_PATH is the path to a merged YAML
-    (output of agnosticv --merge), or - for stdin.
+    When multiple files are given, identical stages are grouped together.
+    FILE_PATHS are paths to merged YAMLs (output of agnosticv --merge),
+    or - for stdin (single file only).
     """
-    data, source_path = _load_merged_yaml(file_path)
-    ci_name, stage = _infer_ci_name_stage(file_path, ci_name, stage)
+    results_with_findings: list[tuple[DiscoveryResult, list[Finding]]] = []
 
-    result = asyncio.run(discover_from_merged(ci_name, stage, data))
+    for file_path in file_paths:
+        data, source_path = _load_merged_yaml(file_path)
+        inferred_name, stage = _infer_ci_name_stage(file_path, ci_name, None)
 
-    if result.errors:
-        for err in result.errors:
-            click.echo(f"Warning: {err}", err=True)
+        result = asyncio.run(discover_from_merged(inferred_name, stage, data))
 
-    if pricing:
-        from ci_inspector.core.pricing import load_cnv_rates, resolve_pricing
-        config = load_cnv_rates(pricing_json)
-        updated = asyncio.run(resolve_pricing(result.components, config, pricing_json))
-        result = result.model_copy(update={"components": updated})
+        if result.errors:
+            for err in result.errors:
+                click.echo(f"Warning: {err}", err=True)
 
-    if config_path:
-        cfg = load_config(Path(config_path), Path(config_path).parent)
-    else:
-        cfg = load_config(Path(source_path).parent, Path("."))
+        if pricing:
+            from ci_inspector.core.pricing import load_cnv_rates, resolve_pricing
+            config = load_cnv_rates(pricing_json)
+            updated = asyncio.run(resolve_pricing(result.components, config, pricing_json))
+            result = result.model_copy(update={"components": updated})
 
-    findings = []
-    if cfg.thresholds is not None:
-        findings = check_thresholds(result, cfg.thresholds)
-        findings = [
-            f.model_copy(update={"severity": "warning"}) if f.severity == "error" else f
-            for f in findings
-        ]
+        if config_path:
+            cfg = load_config(Path(config_path), Path(config_path).parent)
+        else:
+            cfg = load_config(Path(source_path).parent, Path("."))
+
+        findings: list[Finding] = []
+        if cfg.thresholds is not None:
+            findings = check_thresholds(result, cfg.thresholds)
+            findings = [
+                f.model_copy(update={"severity": "warning"}) if f.severity == "error" else f
+                for f in findings
+            ]
+
+        results_with_findings.append((result, findings))
+
+    all_results = [r for r, _ in results_with_findings]
+    findings_by_stage = {r.stage: f for r, f in results_with_findings}
+    groups = group_results(all_results)
 
     if fmt == "json":
         import json
-        json_data = result.model_dump(mode="json")
-        total_instances = sum(c.count for c in result.components)
-        json_data["summary"] = {
-            "total_vcpus": result.total_vcpus,
-            "total_memory_gb": result.total_memory_gb,
-            "total_instances": total_instances,
-            "total_storage_gb": sum(c.storage_gb * c.count for c in result.components),
-            "total_cost_per_hour": str(result.total_cost_per_hour) if result.total_cost_per_hour else None,
-        }
-        json_data["findings"] = [f.model_dump() for f in findings]
-        click.echo(json.dumps(json_data, indent=2, default=str))
+        all_json = []
+        for stages, result in groups:
+            json_data = result.model_dump(mode="json")
+            json_data["stages"] = stages
+            total_instances = sum(c.count for c in result.components)
+            json_data["summary"] = {
+                "total_vcpus": result.total_vcpus,
+                "total_memory_gb": result.total_memory_gb,
+                "total_instances": total_instances,
+                "total_storage_gb": sum(c.storage_gb * c.count for c in result.components),
+                "total_cost_per_hour": str(result.total_cost_per_hour) if result.total_cost_per_hour else None,
+            }
+            json_data["findings"] = [f.model_dump() for f in findings_by_stage.get(stages[0], [])]
+            all_json.append(json_data)
+        output = all_json if len(all_json) > 1 else all_json[0]
+        click.echo(json.dumps(output, indent=2, default=str))
     elif fmt == "annotations":
-        for f in findings:
-            severity = "warning" if f.severity == "warning" else "notice"
-            click.echo(f"::{severity} file={ci_name}/{stage}.yaml,line=1::CI Inspector: {f.message}")
+        for stages, result in groups:
+            findings = findings_by_stage.get(stages[0], [])
+            for f in findings:
+                severity = "warning" if f.severity == "warning" else "notice"
+                for s in stages:
+                    click.echo(f"::{severity} file={result.ci_name}/{s}.yaml,line=1::CI Inspector: {f.message}")
     else:
-        click.echo(format_summary(result))
-        click.echo()
-        click.echo(format_table(result))
-        click.echo(format_validation(findings))
+        first = True
+        for stages, result in groups:
+            if not first:
+                click.echo()
+            first = False
+            click.echo(format_summary(result, stages=stages))
+            click.echo()
+            click.echo(format_table(result, stages=stages))
+            click.echo(format_validation(findings_by_stage.get(stages[0], [])))
 
 
 @main.command()

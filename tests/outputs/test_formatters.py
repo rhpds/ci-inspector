@@ -3,7 +3,7 @@ from decimal import Decimal
 
 from ci_inspector.core.models import Component, DiscoveryResult, Finding
 from ci_inspector.outputs.json_fmt import format_json
-from ci_inspector.outputs.table_fmt import format_table, format_summary, format_validation
+from ci_inspector.outputs.table_fmt import format_table, format_summary, format_validation, group_results
 from ci_inspector.outputs.annotations_fmt import format_annotations
 
 
@@ -158,3 +158,99 @@ class TestFormatValidation:
         output = format_validation(findings)
         assert "[!]" in output
         assert "[i]" in output
+
+
+class TestGroupResults:
+    def _make_result(self, stage, components=None) -> DiscoveryResult:
+        if components is None:
+            components = [
+                Component(purpose="bastion", instance_type="t3a.medium",
+                          count=1, cpu=2, memory_gb=4, storage_gb=0,
+                          cloud="AWS", os="Linux"),
+            ]
+        return DiscoveryResult(
+            ci_name="test-lab", stage=stage, components=components,
+            is_binder=False, env_type="ocp4-cluster", cloud_provider="AWS",
+        )
+
+    def test_all_identical(self):
+        results = [self._make_result(s) for s in ("dev", "event", "prod")]
+        groups = group_results(results)
+        assert len(groups) == 1
+        stages, _ = groups[0]
+        assert stages == ["dev", "event", "prod"]
+
+    def test_all_different(self):
+        r1 = self._make_result("dev", [
+            Component(purpose="bastion", instance_type="t3a.medium",
+                      count=1, cpu=2, memory_gb=4, storage_gb=0,
+                      cloud="AWS", os="Linux"),
+        ])
+        r2 = self._make_result("prod", [
+            Component(purpose="bastion", instance_type="m5.xlarge",
+                      count=1, cpu=4, memory_gb=16, storage_gb=0,
+                      cloud="AWS", os="Linux"),
+        ])
+        groups = group_results([r1, r2])
+        assert len(groups) == 2
+        assert groups[0][0] == ["dev"]
+        assert groups[1][0] == ["prod"]
+
+    def test_partial_match(self):
+        small = [
+            Component(purpose="bastion", instance_type="t3a.medium",
+                      count=1, cpu=2, memory_gb=4, storage_gb=0,
+                      cloud="AWS", os="Linux"),
+        ]
+        big = [
+            Component(purpose="bastion", instance_type="m5.xlarge",
+                      count=1, cpu=4, memory_gb=16, storage_gb=0,
+                      cloud="AWS", os="Linux"),
+        ]
+        results = [
+            self._make_result("dev", small),
+            self._make_result("event", small),
+            self._make_result("prod", big),
+        ]
+        groups = group_results(results)
+        assert len(groups) == 2
+        assert groups[0][0] == ["dev", "event"]
+        assert groups[1][0] == ["prod"]
+
+    def test_single_result(self):
+        groups = group_results([self._make_result("prod")])
+        assert len(groups) == 1
+        assert groups[0][0] == ["prod"]
+
+
+class TestGroupedFormatting:
+    def _make_result(self, stage) -> DiscoveryResult:
+        return DiscoveryResult(
+            ci_name="test-lab", stage=stage,
+            components=[
+                Component(purpose="bastion", instance_type="t3a.medium",
+                          count=1, cpu=2, memory_gb=4, storage_gb=0,
+                          cloud="AWS", os="Linux"),
+            ],
+            is_binder=False, env_type="ocp4-cluster", cloud_provider="AWS",
+        )
+
+    def test_summary_with_multiple_stages(self):
+        result = self._make_result("dev")
+        summary = format_summary(result, stages=["dev", "event", "prod"])
+        assert "test-lab (dev, event, prod)" in summary
+
+    def test_summary_single_stage_unchanged(self):
+        result = self._make_result("prod")
+        summary = format_summary(result)
+        assert "test-lab (prod)" in summary
+
+    def test_table_with_multiple_stages(self):
+        result = self._make_result("dev")
+        output = format_table(result, stages=["dev", "event"])
+        assert "dev, event" in output
+
+    def test_table_single_stage_unchanged(self):
+        result = self._make_result("prod")
+        output = format_table(result)
+        assert "(prod)" in output

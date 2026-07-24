@@ -74,10 +74,15 @@ agnosticv --git=false --merge summit-2026/my-lab/event.yaml | sed '/^#/d' \
 
 Shows infrastructure size summary and threshold warnings **without failing the pipeline** — always exits 0. Designed for gradual rollout before enforcing hard limits with `check-merged`.
 
+When multiple files are given, **identical stages are grouped** — if dev/event have the same infrastructure but prod differs, you see dev/event once and prod separately.
+
 ```bash
-# From a merged YAML file
+# Single file (from stdin or path)
 agnosticv --git=false --merge summit-2026/my-lab/event.yaml | sed '/^#/d' \
-  | ci-inspector validate-merged - --ci-name my-lab --stage event
+  | ci-inspector validate-merged - --ci-name my-lab
+
+# Multiple stages — identical ones are deduplicated
+ci-inspector validate-merged dev.yml event.yml prod.yml --ci-name my-lab
 
 # With cost estimates
 ci-inspector validate-merged /tmp/merged.yaml --ci-name my-lab --pricing
@@ -89,10 +94,10 @@ ci-inspector validate-merged /tmp/merged.yaml --ci-name my-lab --format annotati
 ci-inspector validate-merged /tmp/merged.yaml --ci-name my-lab --format json
 ```
 
-Example output:
+Example output (all stages identical):
 
 ```
-my-lab (event) — Summary
+my-lab (dev, event, prod) — Summary
   48 vCPUs · 192 GB RAM · 6 instances
 
 ┌─────────┬──────────────┬───────┬──────┬────────┬─────────┐
@@ -102,7 +107,6 @@ my-lab (event) — Summary
 
 Validation:
   [!] 48 vCPUs (AWS) exceeds threshold of 32
-  All other checks passed.
 ```
 
 ### `check` / `check-merged` — Does it pass policy thresholds?
@@ -256,8 +260,8 @@ When a CI exceeds thresholds, developers see warnings inline on their PR diff:
 Use `validate-merged` in the CI pipeline. Authors see their CI's size and any threshold warnings, but the pipeline never fails:
 
 ```bash
-ci-inspector validate-merged "$merged_file" \
-    --ci-name "$ci_name" --stage "$stage" \
+ci-inspector validate-merged dev.yml event.yml prod.yml \
+    --ci-name "$ci_name" \
     --format annotations
 ```
 
@@ -303,7 +307,7 @@ jobs:
 | Source | Flag | When to use |
 |--------|------|-------------|
 | K8s cluster | `--source k8s --kubeconfig PATH` | Spot-checking live catalog, full binder resolution |
-| Merged YAML | `analyze-merged FILE` / `validate-merged FILE` | CI pipelines with `agnosticv --merge` |
+| Merged YAML | `analyze-merged FILE` / `validate-merged FILE...` | CI pipelines with `agnosticv --merge` |
 | Git checkout | `--source git --repo-path PATH` | Offline analysis (limited — no `#include` resolution) |
 
 ## Development
