@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import subprocess
 import sys
 from pathlib import Path
@@ -44,10 +45,27 @@ def main():
 @click.option("--format", "fmt", default="table", type=click.Choice(["json", "table"]))
 @click.option("--pricing/--no-pricing", default=False, help="Include cost estimates")
 @click.option("--pricing-json", default=None, help="Path to pricing JSON (default: bundled)")
-def analyze(ci_name, stage, source, repo_path, kubeconfig, fmt, pricing, pricing_json):
+@click.option("--parameter", "parameters", multiple=True, metavar="NAME=VALUE",
+              help="Override a catalog parameter (repeatable; JSON scalars or plain strings).")
+def analyze(ci_name, stage, source, repo_path, kubeconfig, fmt, pricing, pricing_json, parameters):
     """Analyze infrastructure for a catalog item."""
+    overrides = {}
+    for parameter in parameters:
+        name, separator, value = parameter.partition("=")
+        if not separator or not name.strip():
+            raise click.BadParameter("Expected NAME=VALUE", param_hint="--parameter")
+        try:
+            parsed = json.loads(value)
+        except ValueError:
+            parsed = value
+        if isinstance(parsed, (dict, list)):
+            raise click.BadParameter("Expected a scalar value", param_hint="--parameter")
+        overrides[name.strip()] = parsed
     src = _get_source(source, repo_path, kubeconfig)
-    result = asyncio.run(discover(ci_name, stage, src))
+    result = asyncio.run(discover(ci_name, stage, src, _parameter_overrides=overrides or None))
+
+    for warning in result.warnings:
+        click.echo(f"Warning: {warning}", err=True)
 
     if result.errors:
         for err in result.errors:

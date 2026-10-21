@@ -54,7 +54,20 @@ ci-inspector analyze <ci-name> --stage prod --source git --repo-path ~/agnosticv
 
 # Output as JSON
 ci-inspector analyze <ci-name> --source k8s --format json
+
+# Select the CNV branch of a published multi-cloud CI (defaults to AWS)
+ci-inspector analyze published.ocp4-cluster --stage prod --source k8s \
+  --kubeconfig ~/secrets/ocp-us-west-2.infra.open.redhat.com.kubeconfig \
+  --parameter ocp_cloud_provider=cnv --parameter cluster_size=sno --pricing
 ```
+
+Repeat `--parameter NAME=VALUE` to select catalog options or override sizing.
+Values accept JSON scalars (numbers, booleans, null, or quoted strings) and
+plain strings. Explicit values take precedence over catalog defaults and are
+routed to child components according to the catalog definition. Results describe
+the selected configuration, not the configuration of historical requests.
+Unresolved binder infrastructure produces warnings; child lookup errors propagate
+to the parent and cause `analyze` to fail.
 
 ### `analyze-merged` — Analyze pre-merged YAML
 

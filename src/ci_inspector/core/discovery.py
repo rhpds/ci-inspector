@@ -1568,15 +1568,21 @@ async def discover(
             if not item.agnosticv_repo and avc_spec.get("agnosticvRepo"):
                 item = item.model_copy(update={"agnosticv_repo": avc_spec["agnosticvRepo"]})
 
+    # Form options routed to children do not establish infrastructure owned by
+    # this CI. Keep track of the actual definition before adding form values.
+    definition_keys = set(definition)
+
     # Apply parameter overrides
     if _parameter_overrides:
         definition = {**definition, **_parameter_overrides}
 
     # Apply catalog parameter defaults (openAPIV3Schema.default)
     meta_params = meta.get("catalog", {}).get("parameters", [])
-    if not isinstance(meta_params, list):
+    if not isinstance(meta_params, list) or not meta_params:
         # Try from definition __meta__
         meta_params = definition.get("__meta__", {}).get("catalog", {}).get("parameters", [])
+    if not isinstance(meta_params, list) or not meta_params:
+        meta_params = list(item.parameters.values())
     if isinstance(meta_params, list):
         for param in meta_params:
             pname = param.get("name", "")
@@ -1635,7 +1641,8 @@ async def discover(
 
     has_own_infra = bool(merged.get("instances")) or bool(merged.get("ai_control_plane_cores"))
     if not has_own_infra:
-        has_own_infra = any(k.endswith("_instance_type") for k in merged if merged.get(k))
+        infra_keys = definition_keys | set(agnosticd_defaults)
+        has_own_infra = any(k.endswith("_instance_type") for k in infra_keys if merged.get(k))
 
     if binder_components and isinstance(binder_components, (list, dict)) and not has_own_infra:
         # Check if these are __meta__-style entries (with path/item keys)
@@ -1877,6 +1884,7 @@ async def _discover_binder(
     """
     all_components: list[Component] = []
     warnings: list[str] = []
+    errors: list[str] = []
 
     # Normalize to list of (name, config) pairs
     if isinstance(binder_components, dict):
@@ -1954,6 +1962,9 @@ async def _discover_binder(
             all_components.append(Component(**cd))
 
         warnings.extend(sub_result.warnings)
+        errors.extend(f"Component {comp_name} ({sub_ci}.{sub_stage}): {error}" for error in sub_result.errors)
+        if not sub_result.components and not sub_result.errors:
+            warnings.append(f"Component {comp_name} ({sub_ci}.{sub_stage}) resolved no infrastructure")
 
     # Extract MachineSet groups from parent definition
     parent_cloud = (parent_definition.get("cloud_provider") or "none").lower()
@@ -1974,6 +1985,9 @@ async def _discover_binder(
     if vm_components:
         all_components.extend(vm_components)
 
+    if not all_components:
+        warnings.append("Binder resolved no infrastructure; check component conditions and catalog parameters")
+
     # Extract metadata from parent definition
     parent_meta = parent_definition.get("__meta__", {})
     metadata = _extract_metadata(parent_definition, parent_meta)
@@ -1992,6 +2006,7 @@ async def _discover_binder(
         stage=stage,
         components=all_components,
         is_binder=True,
+        errors=errors,
         env_type=env_type or None,
         showroom_url=metadata["showroom_url"],
         showroom_ref=metadata["showroom_ref"],
